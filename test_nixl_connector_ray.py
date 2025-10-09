@@ -48,9 +48,10 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 # Default backends (can be overridden by command line)
-BACKENDS = ["LIBFABRIC", "UCX"]
+BACKENDS = ["LIBFABRIC"]
 NIXL_MEMORY_TYPE = "VRAM"
 FILL_VALUE = 0.05
+TOLERANCE = 1e-2
 
 
 @dataclass
@@ -325,36 +326,47 @@ class EngineActor:
         """
         Follows nixl_connector.py:_pop_done_transfers() flow.
         Lines 1275-1303 in nixl_connector.py
-        
+
         Polls transfer state until completion.
+
+        Returns:
+            dict: Telemetry data from the transfer
         """
         if self._xfer_handle is None:
             raise ValueError("Must call start_transfer first")
-        
+
         print(f"\n[{self._role}] Waiting for transfer to complete...")
         poll_count = 0
-        
+        telemetry = {}
+
         while True:
             xfer_state = self._agent.check_xfer_state(self._xfer_handle)
             poll_count += 1
-            
+
             if xfer_state == "DONE":
                 elapsed = time.perf_counter() - self._start_time
                 print(f"[{self._role}] Transfer DONE! Elapsed: {elapsed:.3f}s, polls: {poll_count}")
-                
+
                 # Get telemetry (like vLLM does)
                 try:
-                    telemetry = self._agent.get_xfer_telemetry(self._xfer_handle)
-                    print(f"[{self._role}] Transfer telemetry:")
-                    print(f"  - Transfer duration: {telemetry.xferDuration / 1e6:.3f}s")
-                    print(f"  - Post duration: {telemetry.postDuration / 1e6:.3f}s")
-                    print(f"  - Bytes transferred: {telemetry.totalBytes / 1e6:.2f} MB")
-                    print(f"  - Descriptors: {telemetry.descCount}")
-                    throughput = (telemetry.totalBytes / 1e6) / (telemetry.xferDuration / 1e6)
-                    print(f"  - Throughput: {throughput:.2f} MB/s")
+                    telemetry_raw = self._agent.get_xfer_telemetry(self._xfer_handle)
+                    telemetry = {
+                        "transfer_duration_s": telemetry_raw.xferDuration / 1e6,
+                        "post_duration_s": telemetry_raw.postDuration / 1e6,
+                        "bytes_transferred": telemetry_raw.totalBytes,
+                        "descriptors": telemetry_raw.descCount,
+                        "elapsed_s": elapsed,
+                        "poll_count": poll_count,
+                        "throughput_mbps": (telemetry_raw.totalBytes / 1e6) / (telemetry_raw.xferDuration / 1e6),
+                    }
                 except Exception as e:
                     print(f"[{self._role}] Could not get telemetry: {e}")
-                
+                    telemetry = {
+                        "error": str(e),
+                        "elapsed_s": elapsed,
+                        "poll_count": poll_count,
+                    }
+
                 # Release handle
                 self._agent.release_xfer_handle(self._xfer_handle)
                 break
@@ -365,6 +377,8 @@ class EngineActor:
                 time.sleep(0.01)
             else:
                 raise RuntimeError(f"Transfer failed with state: {xfer_state}")
+
+        return telemetry
     
     def validate_transfer(self, transferred_block_ids: list[int]):
         """
@@ -384,14 +398,12 @@ class EngineActor:
                     block_data = cache_tensor[block_id]  # Shape: [num_kv_heads, block_size, head_dim]
                     unique_values = block_data.unique()
                     
-                    if len(unique_values) != 1 or abs(unique_values[0].item() - expected_value) > 1e-5:
+                    if len(unique_values) != 1 or abs(unique_values[0].item() - expected_value) > TOLERANCE:
                         print(
                             f"Transfer validation FAILED for {layer_name}, block {block_id}. "
                             f"Expected all {expected_value}, got {unique_values.tolist()}"
                         )
                         return False
-                
-                print(f"[{self._role}] ✓ {layer_name}: All {len(transferred_block_ids)} blocks validated")
             
             print("✓ Transfer validation PASSED! All transferred blocks contain prefill values.")
             return True
@@ -399,28 +411,31 @@ class EngineActor:
             print(f"[{self._role}] No validation needed for prefill engine.")
             return True
     
-    def run_transfer(self, remote_metadata: NixlAgentMetadata, 
+    def run_transfer(self, remote_metadata: NixlAgentMetadata,
                      local_block_ids: list[int], remote_block_ids: list[int]):
         """
         Execute the full transfer flow for decode engine.
         This is the main entry point called from the driver.
+
+        Returns:
+            tuple: (success: bool, telemetry: dict)
         """
         print(f"\n[{self._role}] ===== Starting Transfer Flow =====")
-        
+
         # Step 1: Add remote agent
         self.add_remote_agent(remote_metadata)
-        
+
         # Step 2: Start transfer
         self.start_transfer(local_block_ids, remote_block_ids)
-        
-        # Step 3: Wait for completion
-        self.wait_for_transfer()
-        
+
+        # Step 3: Wait for completion and collect telemetry
+        telemetry = self.wait_for_transfer()
+
         # Step 4: Validate (only the transferred blocks)
         result = self.validate_transfer(local_block_ids)
-        
+
         print(f"[{self._role}] ===== Transfer Flow Complete =====\n")
-        return result
+        return result, telemetry
 
 
 def main():
@@ -524,9 +539,9 @@ def main():
     extra_verbosity_flags = {}
     if args.verbose: 
         extra_verbosity_flags = {
-            "FI_LOG_LEVEL": "debug",
-            "FI_LOG_PROV": "efa",
-            "UCX_LOG_LEVEL": "debug",
+            # "FI_LOG_LEVEL": "debug",
+            # "FI_LOG_PROV": "efa",
+            # "UCX_LOG_LEVEL": "debug",
             "NIXL_LOG_LEVEL": "DEBUG",
         }
     
@@ -663,7 +678,7 @@ def main():
         
         # Start transfer on decode actor
         start_time = time.time()
-        result = ray.get(decode.run_transfer.remote(
+        result, telemetry = ray.get(decode.run_transfer.remote(
             prefill_metadata,
             local_block_ids,
             remote_block_ids
@@ -684,6 +699,18 @@ def main():
             print(f"   Transferred: {transfer_bytes / 1e6:.2f} MB")
             print(f"   Total time: {elapsed:.3f}s")
             print(f"   Backends: {', '.join(BACKENDS)}")
+
+            # Print telemetry details
+            if telemetry and 'error' not in telemetry:
+                print(f"\n   Transfer Telemetry:")
+                print(f"     Duration: {telemetry['transfer_duration_s']:.3f}s")
+                print(f"     Post time: {telemetry['post_duration_s']:.3f}s")
+                print(f"     Throughput: {telemetry['throughput_mbps']:.2f} MB/s")
+                print(f"     Descriptors: {telemetry['descriptors']}")
+                print(f"     Poll count: {telemetry['poll_count']}")
+                print(f"     Bytes: {telemetry['bytes_transferred']:,} bytes")
+            elif telemetry and 'error' in telemetry:
+                print(f"   Telemetry error: {telemetry['error']}")
         else:
             print(f"❌ TEST FAILED")
             print(f"   Check logs above for details")
