@@ -13,13 +13,30 @@ Key flow (matching nixl_connector.py):
 4. Wait: check_xfer_state → get_xfer_telemetry → release_xfer_handle
 
 Usage:
-  python test_nixl_connector_ray.py --strategy spread  # Cross-node (default)
-  python test_nixl_connector_ray.py --strategy pack    # Same-node
-  python test_nixl_connector_ray.py --blocks 50        # Transfer 50 blocks
+  # Basic cross-node transfer (contiguous blocks 0-9)
+  python test_nixl_connector_ray.py --strategy spread
+  
+  # Same-node transfer
+  python test_nixl_connector_ray.py --strategy pack
+  
+  # Transfer random blocks (non-contiguous, different src/dst blocks)
+  python test_nixl_connector_ray.py --strategy spread --random-blocks --blocks 50
+  
+  # Large transfer with custom parameters
+  python test_nixl_connector_ray.py --blocks 100 --num-blocks 1000 --num-layers 4
+
+  # Test specific backends
+  python test_nixl_connector_ray.py --backends LIBFABRIC
+  python test_nixl_connector_ray.py --backends UCX
+  python test_nixl_connector_ray.py --backends LIBFABRIC,UCX
+
+Note: With --random-blocks, source and destination blocks are different random sets,
+      simulating realistic block remapping scenarios in vLLM prefix caching.
 """
 
 import argparse
 import os
+import random
 import time
 from dataclasses import dataclass
 
@@ -30,9 +47,10 @@ from nixl._api import nixl_agent, nixl_agent_config
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-# BACKENDS = ["LIBFABRIC", "UCX"]
-BACKENDS = ["UCX"]
+# Default backends (can be overridden by command line)
+BACKENDS = ["LIBFABRIC", "UCX"]
 NIXL_MEMORY_TYPE = "VRAM"
+FILL_VALUE = 0.05
 
 
 @dataclass
@@ -74,7 +92,7 @@ class EngineActor:
         # Shape: [num_blocks, num_kv_heads, block_size, head_dim] (HND layout)
         # Using separate K and V tensors per layer (split_k_and_v=True case)
         print(f"[{role}] Creating KV caches...")
-        fill_value = 1.0 if role == "prefill" else 0.0
+        fill_value = FILL_VALUE if role == "prefill" else 0.0
         self.kv_caches = {}
         self.kv_caches_base_addr = []
         
@@ -277,8 +295,8 @@ class EngineActor:
             self._dst_num_blocks, remote_block_ids
         )
         
-        print(f"[{self._role}] Local desc IDs: {local_block_descs_ids[:10]}... (total {len(local_block_descs_ids)})")
-        print(f"[{self._role}] Remote desc IDs: {remote_block_descs_ids[:10]}... (total {len(remote_block_descs_ids)})")
+        print(f"[{self._role}] Local desc IDs: {local_block_descs_ids[:20]}... (total {len(local_block_descs_ids)})")
+        print(f"[{self._role}] Remote desc IDs: {remote_block_descs_ids[:20]}... (total {len(remote_block_descs_ids)})")
         
         assert len(local_block_descs_ids) == len(remote_block_descs_ids), \
             f"Descriptor count mismatch: {len(local_block_descs_ids)} != {len(remote_block_descs_ids)}"
@@ -348,20 +366,34 @@ class EngineActor:
             else:
                 raise RuntimeError(f"Transfer failed with state: {xfer_state}")
     
-    def validate_transfer(self):
-        """Validate that the transfer worked correctly."""
+    def validate_transfer(self, transferred_block_ids: list[int]):
+        """
+        Validate that the transfer worked correctly.
+        Only checks the blocks that were actually transferred.
+        """
         if self._role == "decode":
             print(f"\n[{self._role}] Validating transfer...")
+            
+            print(f"[{self._role}] Checking {len(transferred_block_ids)} transferred blocks: {transferred_block_ids}")
+            
             for layer_name, cache_tensor in self.kv_caches.items():
-                expected_value = 1.0
-                actual_values = cache_tensor.unique()
-                if len(actual_values) != 1 or abs(actual_values[0].item() - expected_value) > 1e-5:
-                    print(
-                        f"Transfer validation FAILED for {layer_name}. "
-                        f"Expected all {expected_value}, got {actual_values.tolist()}"
-                    )
-                    return False
-            print("✓ Transfer validation PASSED! All decode KV caches contain prefill values.")
+                expected_value = FILL_VALUE
+                
+                # Only check the transferred blocks
+                for block_id in transferred_block_ids:
+                    block_data = cache_tensor[block_id]  # Shape: [num_kv_heads, block_size, head_dim]
+                    unique_values = block_data.unique()
+                    
+                    if len(unique_values) != 1 or abs(unique_values[0].item() - expected_value) > 1e-5:
+                        print(
+                            f"Transfer validation FAILED for {layer_name}, block {block_id}. "
+                            f"Expected all {expected_value}, got {unique_values.tolist()}"
+                        )
+                        return False
+                
+                print(f"[{self._role}] ✓ {layer_name}: All {len(transferred_block_ids)} blocks validated")
+            
+            print("✓ Transfer validation PASSED! All transferred blocks contain prefill values.")
             return True
         else:
             print(f"[{self._role}] No validation needed for prefill engine.")
@@ -384,8 +416,8 @@ class EngineActor:
         # Step 3: Wait for completion
         self.wait_for_transfer()
         
-        # Step 4: Validate
-        result = self.validate_transfer()
+        # Step 4: Validate (only the transferred blocks)
+        result = self.validate_transfer(local_block_ids)
         
         print(f"[{self._role}] ===== Transfer Flow Complete =====\n")
         return result
@@ -429,11 +461,33 @@ def main():
         action='store_true',
         help='Verbose logging'
     )
+    parser.add_argument(
+        '--random-blocks',
+        action='store_true',
+        help='Transfer random blocks with different src/dst mappings (tests non-sequential access and block remapping)'
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=42,
+        help='Random seed for block selection (default: 42)'
+    )
+    parser.add_argument(
+        '--backends',
+        type=str,
+        default='LIBFABRIC,UCX',
+        help='NIXL backends to use (comma-separated: LIBFABRIC,UCX) (default: LIBFABRIC,UCX)'
+    )
     args = parser.parse_args()
     
+    # Parse backends
+    backends = [b.strip() for b in args.backends.split(',') if b.strip()]
+    global BACKENDS
+    BACKENDS = backends
+
     strategy_name = "STRICT_SPREAD" if args.strategy == "spread" else "STRICT_PACK"
     test_type = "Cross-node (inter-node)" if args.strategy == "spread" else "Same-node (intra-node)"
-    
+
     print("="*80)
     print("NIXL Connector Test - Following vLLM nixl_connector.py Flow")
     print(f"Strategy: {strategy_name} - {test_type}")
@@ -451,10 +505,14 @@ def main():
     print(f"  - Block size: {block_size} tokens")
     print(f"  - Total blocks: {num_blocks}")
     print(f"  - Blocks to transfer: {num_blocks_to_transfer}")
+    print(f"  - Block selection: {'RANDOM' if args.random_blocks else 'CONTIGUOUS'}")
+    if args.random_blocks:
+        print(f"  - Random seed: {args.seed}")
     print(f"  - Num layers: {num_layers}")
     print(f"  - KV heads: {num_kv_heads}")
     print(f"  - Head dim: {head_dim}")
-    
+    print(f"  - NIXL backends: {BACKENDS}")
+
     # Calculate transfer size
     bytes_per_block = num_kv_heads * block_size * head_dim * 2  # 2 bytes for fp16
     transfer_bytes = bytes_per_block * num_blocks_to_transfer * num_layers * 2  # 2 for K and V
@@ -568,12 +626,40 @@ def main():
         print("PHASE 3: Execute KV Cache Transfer")
         print("="*80)
         
-        local_block_ids = list(range(num_blocks_to_transfer))
-        remote_block_ids = list(range(num_blocks_to_transfer))
+        # Select blocks to transfer
+        if args.random_blocks:
+            # Random non-contiguous blocks with different src/dst mappings
+            random.seed(args.seed)
+            
+            # Select random local (destination) blocks
+            all_local_blocks = list(range(num_blocks))
+            local_block_ids = sorted(random.sample(all_local_blocks, num_blocks_to_transfer))
+            
+            # Select different random remote (source) blocks
+            # Use different seed to ensure different blocks
+            random.seed(args.seed + 1000)
+            all_remote_blocks = list(range(num_blocks))
+            remote_block_ids = sorted(random.sample(all_remote_blocks, num_blocks_to_transfer))
+            
+            print(f"\n[Driver] Using RANDOM block selection (seed={args.seed})")
+            print(f"[Driver] Source and destination blocks are DIFFERENT")
+            if len(local_block_ids) <= 10:
+                print(f"[Driver] Mapping:")
+                for local, remote in zip(local_block_ids, remote_block_ids):
+                    print(f"    Remote block {remote} → Local block {local}")
+            else:
+                print(f"[Driver] Sample mapping (first 10):")
+                for local, remote in zip(local_block_ids[:10], remote_block_ids[:10]):
+                    print(f"    Remote block {remote} → Local block {local}")
+        else:
+            # Contiguous blocks starting from 0
+            local_block_ids = list(range(num_blocks_to_transfer))
+            remote_block_ids = list(range(num_blocks_to_transfer))
+            print(f"\n[Driver] Using CONTIGUOUS block selection (0 to {num_blocks_to_transfer-1})")
         
         print(f"\n[Driver] Initiating transfer of {num_blocks_to_transfer} blocks...")
-        print(f"[Driver] Local block IDs: {local_block_ids}")
-        print(f"[Driver] Remote block IDs: {remote_block_ids}")
+        print(f"[Driver] Local (dst) block IDs:  {local_block_ids if len(local_block_ids) <= 20 else str(local_block_ids[:20]) + ' ...'}")
+        print(f"[Driver] Remote (src) block IDs: {remote_block_ids if len(remote_block_ids) <= 20 else str(remote_block_ids[:20]) + ' ...'}")
         
         # Start transfer on decode actor
         start_time = time.time()
