@@ -539,9 +539,10 @@ def main():
     extra_verbosity_flags = {}
     if args.verbose: 
         extra_verbosity_flags = {
-            # "FI_LOG_LEVEL": "debug",
-            # "FI_LOG_PROV": "efa",
-            # "UCX_LOG_LEVEL": "debug",
+            "FI_LOG_LEVEL": "debug",
+            "FI_LOG_PROV": "efa",
+            "UCX_LOG_LEVEL": "debug",
+            "UCX_PROTO_INFO": "y",
             "NIXL_LOG_LEVEL": "DEBUG",
         }
     
@@ -550,6 +551,15 @@ def main():
     ray.init(runtime_env={
         "env_vars": {
             "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
+            "FI_PROVIDER": "efa",
+            "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
+            "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
+            "FI_EFA_MR_CACHE_ENABLE": "1",
+            "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
+            "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
+            # Explicitly disable all dmabuf/GPU direct paths
+            "FI_EFA_FORK_SAFE": "1",
+            "NIXL_DISABLE_DMABUF": "1",  # Force NIXL to use host staging
             **extra_verbosity_flags,
         }
     })
