@@ -63,7 +63,8 @@ def get_libfabric_env_vars(verbose=False):
 def get_ucx_env_vars(verbose=False):
     """Return environment variables for UCX configuration."""
     env_vars = {
-        "UCX_TLS": "self,cuda_ipc,cuda_copy,cma,tcp",
+        # "UCX_TLS": "self,cuda_ipc,cuda_copy,cma,tcp",
+        "UCX_TLS": "all"
     }
     if verbose:
         env_vars["UCX_LOG_LEVEL"] = "debug"

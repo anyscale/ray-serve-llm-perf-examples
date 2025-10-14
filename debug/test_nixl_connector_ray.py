@@ -539,11 +539,11 @@ def main():
     extra_verbosity_flags = {}
     if args.verbose: 
         extra_verbosity_flags = {
-            "FI_LOG_LEVEL": "debug",
-            "FI_LOG_PROV": "efa",
-            "UCX_LOG_LEVEL": "debug",
-            "UCX_PROTO_INFO": "y",
-            "NIXL_LOG_LEVEL": "DEBUG",
+            # "FI_LOG_LEVEL": "trace",  # Info level - debug logs every packet and kills performance
+            # "FI_LOG_PROV": "efa",
+            # "UCX_LOG_LEVEL": "trace",  # Info level for UCX too
+            # Removed: "UCX_PROTO_INFO": "y",  # This can be verbose
+            "NIXL_LOG_LEVEL": "DEBUG",  # TRACE is most verbose - use with caution!
         }
     
     # Initialize Ray with EFA/UCX environment
