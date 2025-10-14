@@ -29,6 +29,9 @@ Usage:
   python test_nixl_connector_ray.py --backends LIBFABRIC
   python test_nixl_connector_ray.py --backends UCX
   python test_nixl_connector_ray.py --backends LIBFABRIC,UCX
+  
+  # Test heterogeneous TP (replicates cross-rail issue)
+  python test_nixl_connector_ray.py --prefill-tp 4 --decode-tp 8 --strategy spread --backends LIBFABRIC
 
 Note: With --random-blocks, source and destination blocks are different random sets,
       simulating realistic block remapping scenarios in vLLM prefix caching.
@@ -70,12 +73,17 @@ class EngineActor:
     Mimics NixlConnectorWorker from vLLM.
     Follows the same registration and transfer flow.
     Ray remote actor for distributed execution.
+    Supports tensor parallelism for multi-actor testing.
     """
     def __init__(self, block_size: int, num_blocks: int, num_layers: int, 
-                 num_kv_heads: int, head_dim: int, role: str, engine_id: str):
+                 num_kv_heads: int, head_dim: int, role: str, engine_id: str,
+                 tp_rank: int = 0, tp_size: int = 1):
         assert role in ["decode", "prefill"]
         self._role = role
-        self.engine_id = engine_id
+        self._tp_rank = tp_rank
+        self._tp_size = tp_size
+        # Include TP rank in engine ID like vLLM does
+        self.engine_id = f"{engine_id}_rank{tp_rank}" if tp_size > 1 else engine_id
         self._block_size = block_size
         self._num_blocks = num_blocks
         self._num_layers = num_layers
@@ -84,15 +92,15 @@ class EngineActor:
         os.environ["NIXL_TELEMETRY_ENABLE"] = "1"
         
         # Get GPU info for this actor
-        print(f"[{role}] Getting GPU info...")
+        print(f"[{self._role}-TP{tp_rank}/{tp_size}] Getting GPU info...")
         self.gpu_id = torch.cuda.current_device()
         self.node_ip = ray.util.get_node_ip_address()
-        print(f"[{role}] Running on node {self.node_ip}, GPU {self.gpu_id}")
+        print(f"[{self._role}-TP{tp_rank}/{tp_size}] Running on node {self.node_ip}, GPU {self.gpu_id}")
         
         # Create KV cache tensors for each layer
         # Shape: [num_blocks, num_kv_heads, block_size, head_dim] (HND layout)
         # Using separate K and V tensors per layer (split_k_and_v=True case)
-        print(f"[{role}] Creating KV caches...")
+        print(f"[{self._role}-TP{tp_rank}/{tp_size}] Creating KV caches...")
         fill_value = FILL_VALUE if role == "prefill" else 0.0
         self.kv_caches = {}
         self.kv_caches_base_addr = []
@@ -194,6 +202,8 @@ class EngineActor:
             "gpu_id": self.gpu_id,
             "role": self._role,
             "engine_id": self.engine_id,
+            "tp_rank": self._tp_rank,
+            "tp_size": self._tp_size,
         }
     
     def get_metadata(self) -> NixlAgentMetadata:
@@ -493,6 +503,18 @@ def main():
         default='LIBFABRIC,UCX',
         help='NIXL backends to use (comma-separated: LIBFABRIC,UCX) (default: LIBFABRIC,UCX)'
     )
+    parser.add_argument(
+        '--prefill-tp',
+        type=int,
+        default=1,
+        help='Tensor parallelism size for prefill engine (default: 1)'
+    )
+    parser.add_argument(
+        '--decode-tp',
+        type=int,
+        default=1,
+        help='Tensor parallelism size for decode engine (default: 1)'
+    )
     args = parser.parse_args()
     
     # Parse backends
@@ -500,7 +522,7 @@ def main():
     global BACKENDS
     BACKENDS = backends
 
-    strategy_name = "STRICT_SPREAD" if args.strategy == "spread" else "STRICT_PACK"
+    strategy_name = "SPREAD" if args.strategy == "spread" else "PACK"
     test_type = "Cross-node (inter-node)" if args.strategy == "spread" else "Same-node (intra-node)"
 
     print("="*80)
@@ -508,7 +530,11 @@ def main():
     print(f"Strategy: {strategy_name} - {test_type}")
     print("="*80)
     
-    # Parameters matching typical LLM configuration (TP=1)
+    # TP configuration
+    prefill_tp = args.prefill_tp
+    decode_tp = args.decode_tp
+    
+    # Parameters matching typical LLM configuration
     block_size = 16  # tokens per block
     num_blocks = args.num_blocks
     num_layers = args.num_layers
@@ -526,6 +552,10 @@ def main():
     print(f"  - Num layers: {num_layers}")
     print(f"  - KV heads: {num_kv_heads}")
     print(f"  - Head dim: {head_dim}")
+    print(f"  - Prefill TP: {prefill_tp}")
+    print(f"  - Decode TP: {decode_tp}")
+    if prefill_tp != decode_tp:
+        print(f"  - ⚠️  HETEROGENEOUS TP: Testing cross-rail transfer issue")
     print(f"  - NIXL backends: {BACKENDS}")
 
     # Calculate transfer size
@@ -570,85 +600,106 @@ def main():
     ray.init(runtime_env={"env_vars": env_vars})
     
     # Create placement group
-    print(f"Creating placement group with {strategy_name}...")
-    pg = placement_group(
-        [{"GPU": 1, "CPU": 1}, {"GPU": 1, "CPU": 1}], 
-        strategy=strategy_name
-    )
+    # Total actors = prefill_tp + decode_tp
+    total_actors = prefill_tp + decode_tp
+    print(f"Creating placement group with {strategy_name} for {total_actors} actors...")
+    print(f"  Prefill actors: {prefill_tp}, Decode actors: {decode_tp}")
+    
+    # Create bundles: one GPU+CPU per actor
+    bundles = [{"GPU": 1, "CPU": 1} for _ in range(total_actors)]
+    pg = placement_group(bundles, strategy=strategy_name)
     ray.get(pg.ready())
     print("✓ Placement group ready\n")
     
     try:
         # ===== PHASE 1: Create actors =====
         print("="*80)
-        print("PHASE 1: Creating Ray actors on different GPUs")
+        print("PHASE 1: Creating Ray actors")
         print("="*80)
         
-        print("\n--- Creating Prefill Engine Actor ---")
-        prefill = EngineActor.options(
-            num_gpus=1,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=pg, 
-                placement_group_bundle_index=0
+        # Create prefill actors
+        print(f"\n--- Creating {prefill_tp} Prefill Engine Actor(s) ---")
+        prefill_actors = []
+        for tp_rank in range(prefill_tp):
+            actor = EngineActor.options(
+                num_gpus=1,
+                scheduling_strategy=PlacementGroupSchedulingStrategy(
+                    placement_group=pg, 
+                    placement_group_bundle_index=tp_rank
+                )
+            ).remote(
+                block_size=block_size,
+                num_blocks=num_blocks,
+                num_layers=num_layers,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                role="prefill",
+                engine_id="prefill_engine",
+                tp_rank=tp_rank,
+                tp_size=prefill_tp
             )
-        ).remote(
-            block_size=block_size,
-            num_blocks=num_blocks,
-            num_layers=num_layers,
-            num_kv_heads=num_kv_heads,
-            head_dim=head_dim,
-            role="prefill",
-            engine_id="prefill_engine"
-        )
+            prefill_actors.append(actor)
         
-        print("\n--- Creating Decode Engine Actor ---")
-        decode = EngineActor.options(
-            num_gpus=1,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=pg, 
-                placement_group_bundle_index=1
+        # Create decode actors
+        print(f"\n--- Creating {decode_tp} Decode Engine Actor(s) ---")
+        decode_actors = []
+        for tp_rank in range(decode_tp):
+            actor = EngineActor.options(
+                num_gpus=1,
+                scheduling_strategy=PlacementGroupSchedulingStrategy(
+                    placement_group=pg, 
+                    placement_group_bundle_index=prefill_tp + tp_rank
+                )
+            ).remote(
+                block_size=block_size,
+                num_blocks=num_blocks,
+                num_layers=num_layers,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                role="decode",
+                engine_id="decode_engine",
+                tp_rank=tp_rank,
+                tp_size=decode_tp
             )
-        ).remote(
-            block_size=block_size,
-            num_blocks=num_blocks,
-            num_layers=num_layers,
-            num_kv_heads=num_kv_heads,
-            head_dim=head_dim,
-            role="decode",
-            engine_id="decode_engine"
-        )
+            decode_actors.append(actor)
         
-        ray.get(prefill.is_ready.remote())
-        ray.get(decode.is_ready.remote())
+        # Wait for all actors to be ready
+        ray.get([actor.is_ready.remote() for actor in prefill_actors + decode_actors])
         time.sleep(1)
         
         
         # Get node information
         print("\n--- Actor Placement Info ---")
-        prefill_info = ray.get(prefill.get_node_info.remote())
-        decode_info = ray.get(decode.get_node_info.remote())
+        prefill_infos = ray.get([actor.get_node_info.remote() for actor in prefill_actors])
+        decode_infos = ray.get([actor.get_node_info.remote() for actor in decode_actors])
         time.sleep(1)
         
+        print("Prefill actors:")
+        for info in prefill_infos:
+            print(f"  TP{info['tp_rank']}/{info['tp_size']}: node={info['node_ip']}, GPU={info['gpu_id']}")
         
-        print(f"Prefill: node={prefill_info['node_ip']}, GPU={prefill_info['gpu_id']}")
-        print(f"Decode:  node={decode_info['node_ip']}, GPU={decode_info['gpu_id']}")
+        print("Decode actors:")
+        for info in decode_infos:
+            print(f"  TP{info['tp_rank']}/{info['tp_size']}: node={info['node_ip']}, GPU={info['gpu_id']}")
         
-        if prefill_info['node_ip'] == decode_info['node_ip']:
-            print("✓ Both actors on SAME NODE (intra-node transfer)")
+        # Check if cross-node
+        all_nodes = set([info['node_ip'] for info in prefill_infos + decode_infos])
+        if len(all_nodes) == 1:
+            print("✓ All actors on SAME NODE (intra-node transfer)")
         else:
-            print("✓ Actors on DIFFERENT NODES (cross-node transfer)")
+            print(f"✓ Actors distributed across {len(all_nodes)} NODES (cross-node transfer)")
         
         # ===== PHASE 2: Handshake =====
         print("\n" + "="*80)
         print("PHASE 2: Handshake - Exchanging metadata")
         print("="*80)
         
-        print("\n[Driver] Getting prefill metadata...")
-        prefill_metadata = ray.get(prefill.get_metadata.remote())
-        print(f"[Driver] Prefill metadata received:")
-        print(f"  - Engine ID: {prefill_metadata.engine_id}")
-        print(f"  - Num blocks: {prefill_metadata.num_blocks}")
-        print(f"  - Num regions and layers: {len(prefill_metadata.kv_caches_base_addr)}")
+        print("\n[Driver] Getting prefill metadata from all TP ranks...")
+        prefill_metadatas = ray.get([actor.get_metadata.remote() for actor in prefill_actors])
+        
+        print(f"[Driver] Prefill metadata received from {len(prefill_metadatas)} ranks:")
+        for i, metadata in enumerate(prefill_metadatas):
+            print(f"  Rank {i}: Engine ID={metadata.engine_id}, Blocks={metadata.num_blocks}, Regions={len(metadata.kv_caches_base_addr)}")
 
         
         # ===== PHASE 3: Transfer =====
@@ -691,13 +742,34 @@ def main():
         print(f"[Driver] Local (dst) block IDs:  {local_block_ids if len(local_block_ids) <= 20 else str(local_block_ids[:20]) + ' ...'}")
         print(f"[Driver] Remote (src) block IDs: {remote_block_ids if len(remote_block_ids) <= 20 else str(remote_block_ids[:20]) + ' ...'}")
         
-        # Start transfer on decode actor
+        # For heterogeneous TP, each decode actor transfers from corresponding prefill actor
+        # Decode actor i transfers from prefill actor (i % prefill_tp)
+        print(f"\n[Driver] Transfer mapping (Decode TP {decode_tp} ← Prefill TP {prefill_tp}):")
+        transfer_futures = []
+        for decode_rank, decode_actor in enumerate(decode_actors):
+            prefill_rank = decode_rank % prefill_tp
+            prefill_metadata = prefill_metadatas[prefill_rank]
+            print(f"  Decode TP{decode_rank} ← Prefill TP{prefill_rank}")
+            
+            future = decode_actor.run_transfer.remote(
+                prefill_metadata,
+                local_block_ids,
+                remote_block_ids
+            )
+            transfer_futures.append((decode_rank, future))
+        
+        # Wait for all transfers to complete
+        print(f"\n[Driver] Waiting for {len(transfer_futures)} transfer(s) to complete...")
         start_time = time.time()
-        result, telemetry = ray.get(decode.run_transfer.remote(
-            prefill_metadata,
-            local_block_ids,
-            remote_block_ids
-        ))
+        results = []
+        for decode_rank, future in transfer_futures:
+            try:
+                result, telemetry = ray.get(future)
+                results.append((decode_rank, result, telemetry, None))
+            except Exception as e:
+                print(f"[Driver] ❌ Transfer failed on Decode TP{decode_rank}: {e}")
+                results.append((decode_rank, False, {}, str(e)))
+        
         elapsed = time.time() - start_time
         time.sleep(1)
         
@@ -706,29 +778,51 @@ def main():
         print("TEST RESULTS")
         print("="*80)
         
-        if result:
-            print(f"✅ TEST PASSED - {test_type} transfer successful!")
-            print(f"   Strategy: {strategy_name}")
-            print(f"   Prefill: {prefill_info['node_ip']}:GPU{prefill_info['gpu_id']}")
-            print(f"   Decode:  {decode_info['node_ip']}:GPU{decode_info['gpu_id']}")
-            print(f"   Transferred: {transfer_bytes / 1e6:.2f} MB")
-            print(f"   Total time: {elapsed:.3f}s")
-            print(f"   Backends: {', '.join(BACKENDS)}")
-
-            # Print telemetry details
-            if telemetry and 'error' not in telemetry:
-                print(f"\n   Transfer Telemetry:")
-                print(f"     Duration: {telemetry['transfer_duration_s']:.3f}s")
-                print(f"     Post time: {telemetry['post_duration_s']:.3f}s")
-                print(f"     Throughput: {telemetry['throughput_mbps']:.2f} MB/s")
-                print(f"     Descriptors: {telemetry['descriptors']}")
-                print(f"     Poll count: {telemetry['poll_count']}")
-                print(f"     Bytes: {telemetry['bytes_transferred']:,} bytes")
-            elif telemetry and 'error' in telemetry:
-                print(f"   Telemetry error: {telemetry['error']}")
+        # Count successes and failures
+        success_count = sum(1 for _, result, _, error in results if result and error is None)
+        fail_count = len(results) - success_count
+        
+        print(f"\nTransfer Summary:")
+        print(f"  Total transfers: {len(results)}")
+        print(f"  Successful: {success_count}")
+        print(f"  Failed: {fail_count}")
+        print(f"  Total time: {elapsed:.3f}s")
+        print(f"  Strategy: {strategy_name}")
+        print(f"  Prefill TP: {prefill_tp}, Decode TP: {decode_tp}")
+        print(f"  Backends: {', '.join(BACKENDS)}")
+        
+        if success_count == len(results):
+            print(f"\n✅ ALL TESTS PASSED - {test_type} transfer successful!")
+        elif success_count > 0:
+            print(f"\n⚠️  PARTIAL SUCCESS - {success_count}/{len(results)} transfers passed")
         else:
-            print(f"❌ TEST FAILED")
-            print(f"   Check logs above for details")
+            print(f"\n❌ ALL TESTS FAILED")
+        
+        # Print per-rank results
+        print(f"\nPer-Rank Results:")
+        for decode_rank, result, telemetry, error in results:
+            if error:
+                print(f"  Decode TP{decode_rank}: ❌ FAILED - {error}")
+            elif result:
+                print(f"  Decode TP{decode_rank}: ✅ PASSED", end="")
+                if telemetry and 'throughput_mbps' in telemetry:
+                    print(f" - {telemetry['throughput_mbps']:.2f} MB/s")
+                else:
+                    print()
+            else:
+                print(f"  Decode TP{decode_rank}: ❌ FAILED - validation error")
+        
+        # Print detailed telemetry for first successful transfer
+        for decode_rank, result, telemetry, error in results:
+            if result and telemetry and 'error' not in telemetry:
+                print(f"\nDetailed Telemetry (Decode TP{decode_rank}):")
+                print(f"  Duration: {telemetry['transfer_duration_s']:.3f}s")
+                print(f"  Post time: {telemetry['post_duration_s']:.3f}s")
+                print(f"  Throughput: {telemetry['throughput_mbps']:.2f} MB/s")
+                print(f"  Descriptors: {telemetry['descriptors']}")
+                print(f"  Poll count: {telemetry['poll_count']}")
+                print(f"  Bytes: {telemetry['bytes_transferred']:,} bytes")
+                break
         
         print("="*80)
         
