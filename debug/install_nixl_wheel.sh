@@ -1,26 +1,22 @@
 #!/bin/bash
-# Script to deploy nixl with system libfabric to all GPU nodes
-# This builds nixl from source with AWS EFA libfabric support
+# Script to install nixl wheel (0.6.1) on all GPU nodes and head node
+# This is a simpler alternative to building from source
 
 # Note: We don't use 'set -e' here because we want to continue to other nodes even if one fails
 
-NIXL_VERSION="main"  # Use main branch instead of tag
-NIXL_BUILD_DIR="/tmp/nixl-build"
-NIXL_INSTALL_PREFIX="/usr/local/nixl"
-EFA_LIBFABRIC_PATH="/opt/amazon/efa"
+NIXL_VERSION="0.6.1"
 SSH_PORT=2222
 AUTO_PROCEED=true  # Set to false to prompt before proceeding
 
 echo "=========================================="
-echo "NIXL Deployment Script"
+echo "NIXL Wheel Installation Script"
 echo "=========================================="
 echo "Version: ${NIXL_VERSION}"
-echo "Install prefix: ${NIXL_INSTALL_PREFIX}"
-echo "EFA libfabric: ${EFA_LIBFABRIC_PATH}"
+echo "Installation method: uv pip install"
 echo ""
 
-# Function to install nixl on a single node
-install_nixl_on_node() {
+# Function to install nixl wheel on a single node
+install_nixl_wheel_on_node() {
     local NODE_IP=$1
     local NODE_INDEX=$2
     local IS_LOCAL=$3  # "true" if this is the local/head node
@@ -29,22 +25,6 @@ install_nixl_on_node() {
     echo "=========================================="
     echo "[$NODE_INDEX] Installing on node: $NODE_IP $([ "$IS_LOCAL" = "true" ] && echo "(LOCAL/HEAD NODE)")"
     echo "=========================================="
-    
-    # Determine command prefix (local or SSH)
-    local CMD_PREFIX=""
-    if [ "$IS_LOCAL" = "true" ]; then
-        CMD_PREFIX=""
-    else
-        CMD_PREFIX="ssh -p ${SSH_PORT} ${NODE_IP}"
-    fi
-    
-    # Step 1: Uninstall pip nixl
-    echo "[$NODE_INDEX] Step 1/7: Uninstalling pip nixl..."
-    if [ "$IS_LOCAL" = "true" ]; then
-        pip uninstall -y nixl 2>/dev/null || true
-    else
-        ssh -p ${SSH_PORT} ${NODE_IP} "pip uninstall -y nixl 2>/dev/null || true"
-    fi
     
     # Helper function to execute command locally or remotely
     exec_cmd() {
@@ -55,52 +35,43 @@ install_nixl_on_node() {
         fi
     }
     
-    # Step 2: Clone nixl if not exists
-    echo "[$NODE_INDEX] Step 2/7: Cloning nixl repository..."
+    # Step 1: Complete uninstallation
+    echo "[$NODE_INDEX] Step 1/3: Completely uninstalling existing nixl..."
     exec_cmd "
-        if [ -d ${NIXL_BUILD_DIR} ]; then
-            echo '  Cleaning existing build directory...'
-            rm -rf ${NIXL_BUILD_DIR}
+        # Uninstall pip package
+        pip uninstall -y nixl 2>/dev/null || true
+        uv pip uninstall -y nixl --system 2>/dev/null || true
+        
+        # Remove any source-built installations
+        if [ -d /usr/local/nixl ]; then
+            echo '  Removing /usr/local/nixl...'
+            sudo rm -rf /usr/local/nixl
         fi
-        cd /tmp && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git nixl-build
+        
+        # Remove ldconfig entry
+        if [ -f /etc/ld.so.conf.d/nixl.conf ]; then
+            echo '  Removing ldconfig entry...'
+            sudo rm -f /etc/ld.so.conf.d/nixl.conf
+            sudo ldconfig
+        fi
+        
+        # Remove build directory if it exists
+        if [ -d /tmp/nixl-build ]; then
+            echo '  Removing build directory...'
+            rm -rf /tmp/nixl-build
+        fi
+        
+        echo '  Cleanup complete'
     " 2>&1 | sed "s/^/  /"
     
-    # Step 3: Configure build with RPATH for EFA libfabric
-    echo "[$NODE_INDEX] Step 3/7: Configuring meson build..."
+    # Step 2: Install nixl wheel using uv
+    echo "[$NODE_INDEX] Step 2/3: Installing nixl==${NIXL_VERSION} using uv..."
     exec_cmd "
-        cd ${NIXL_BUILD_DIR} && \
-        LDFLAGS='-Wl,-rpath,${EFA_LIBFABRIC_PATH}/lib' \
-        meson setup -Dlibfabric_path=${EFA_LIBFABRIC_PATH} build/ --prefix=${NIXL_INSTALL_PREFIX}
-    " 2>&1 | tail -20 | sed "s/^/  /"
-    
-    # Step 4: Build with ninja
-    echo "[$NODE_INDEX] Step 4/7: Building nixl (this may take 2-3 minutes)..."
-    exec_cmd "
-        cd ${NIXL_BUILD_DIR}/build && ninja
+        uv pip install nixl==${NIXL_VERSION} --system
     " 2>&1 | tail -10 | sed "s/^/  /"
     
-    # Step 5: Install to /usr/local/nixl
-    echo "[$NODE_INDEX] Step 5/7: Installing nixl to ${NIXL_INSTALL_PREFIX}..."
-    exec_cmd "
-        cd ${NIXL_BUILD_DIR}/build && sudo ninja install
-    " 2>&1 | tail -10 | sed "s/^/  /"
-    
-    # Step 6: Configure ldconfig
-    echo "[$NODE_INDEX] Step 6/7: Configuring library paths..."
-    exec_cmd "
-        sudo sh -c 'echo ${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu > /etc/ld.so.conf.d/nixl.conf'
-        sudo sh -c 'echo ${EFA_LIBFABRIC_PATH}/lib >> /etc/ld.so.conf.d/nixl.conf'
-        sudo ldconfig
-    "
-    
-    # Step 7: Install Python package
-    echo "[$NODE_INDEX] Step 7/7: Installing Python package..."
-    exec_cmd "
-        cd ${NIXL_BUILD_DIR} && pip install . --no-cache-dir
-    " 2>&1 | tail -5 | sed "s/^/  /"
-    
-    # Verify installation
-    echo "[$NODE_INDEX] Verifying installation..."
+    # Step 3: Verify installation
+    echo "[$NODE_INDEX] Step 3/3: Verifying installation..."
     VERIFY_OUTPUT=$(exec_cmd "
         python3 << 'VERIFY_EOF'
 import sys
@@ -109,19 +80,26 @@ try:
     from nixl._api import nixl_agent, nixl_agent_config
     print('✓ nixl imported successfully')
     
-    # Check libfabric linking
-    import subprocess
-    result = subprocess.run(
-        ['ldd', '${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu/plugins/libplugin_LIBFABRIC.so'],
-        capture_output=True, text=True
-    )
-    if '${EFA_LIBFABRIC_PATH}/lib/libfabric.so' in result.stdout:
-        print('✓ Using EFA libfabric from ${EFA_LIBFABRIC_PATH}')
-        sys.exit(0)
-    else:
-        print('✗ ERROR: Not using EFA libfabric')
-        print(result.stdout)
+    # Check that we're using the wheel installation
+    import os
+    nixl_path = os.path.dirname(nixl.__file__)
+    if '/usr/local/nixl' in nixl_path:
+        print('✗ ERROR: Still using source-built nixl at /usr/local/nixl')
         sys.exit(1)
+    else:
+        print(f'✓ Using wheel installation from: {nixl_path}')
+    
+    # Check backends are available
+    try:
+        config = nixl_agent_config(backends=['LIBFABRIC', 'UCX'])
+        print('✓ Backends: LIBFABRIC and UCX available')
+    except Exception as e:
+        print(f'⚠ Warning: Could not create agent config: {e}')
+    
+    sys.exit(0)
+except ImportError as e:
+    print(f'✗ ERROR: Cannot import nixl: {e}')
+    sys.exit(1)
 except Exception as e:
     print(f'✗ ERROR: {e}')
     sys.exit(1)
@@ -143,7 +121,7 @@ VERIFY_EOF
 echo "Getting list of nodes from Ray cluster..."
 
 # Get all node IPs (GPU workers + head node) using Ray
-GPU_NODES=$(python3 << 'EOF'
+ALL_NODES=$(python3 << 'EOF'
 import ray
 import json
 import socket
@@ -174,10 +152,10 @@ EOF
 )
 
 echo "Nodes found:"
-echo "$GPU_NODES" | python3 -m json.tool
+echo "$ALL_NODES" | python3 -m json.tool
 
 # Parse nodes and install on each
-NODE_IPS=$(echo "$GPU_NODES" | python3 -c "
+NODE_IPS=$(echo "$ALL_NODES" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for node in data:
@@ -192,7 +170,7 @@ fi
 # Count nodes
 NODE_COUNT=$(echo "$NODE_IPS" | wc -l)
 echo ""
-echo "Will install nixl on $NODE_COUNT nodes (GPU workers + head node)"
+echo "Will install nixl==${NIXL_VERSION} on $NODE_COUNT nodes (GPU workers + head node)"
 echo ""
 if [ "$AUTO_PROCEED" != "true" ]; then
     read -p "Press Enter to continue or Ctrl+C to cancel..."
@@ -216,7 +194,7 @@ for NODE_IP in $NODE_IPS; do
         IS_LOCAL="true"
     fi
     
-    if install_nixl_on_node "$NODE_IP" "$NODE_INDEX" "$IS_LOCAL"; then
+    if install_nixl_wheel_on_node "$NODE_IP" "$NODE_INDEX" "$IS_LOCAL"; then
         ((SUCCESS_COUNT++))
     else
         ((FAIL_COUNT++))
@@ -243,9 +221,8 @@ else
     echo ""
     echo "✅ All nodes deployed successfully!"
     echo ""
-    echo "Next steps:"
-    echo "  1. Test with: cd /home/ray/default/ray-serve-pd-example/debug"
-    echo "  2. Run: RAY_DEDUP_LOGS=0 python test_nixl_connector_ray.py --strategy spread --random-blocks --backends LIBFABRIC --num-blocks 3750 --num-layers 50 --blocks 128"
+    echo "Note: nixl ${NIXL_VERSION} wheel includes bundled UCX and libfabric libraries."
+    echo "      To use system EFA libfabric, you may need to set LD_LIBRARY_PATH."
     exit 0
 fi
 

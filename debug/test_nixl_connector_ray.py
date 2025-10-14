@@ -548,21 +548,26 @@ def main():
     
     # Initialize Ray with EFA/UCX environment
     print("Initializing Ray...")
-    ray.init(runtime_env={
-        "env_vars": {
-            "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
-            "FI_PROVIDER": "efa",
-            "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
-            "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
-            "FI_EFA_MR_CACHE_ENABLE": "1",
-            "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
-            "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
-            # Explicitly disable all dmabuf/GPU direct paths
-            "FI_EFA_FORK_SAFE": "1",
-            "NIXL_DISABLE_DMABUF": "1",  # Force NIXL to use host staging
-            **extra_verbosity_flags,
-        }
-    })
+    
+    # CRITICAL: Use AWS EFA libfabric (2.1.0amzn3.0) instead of bundled libfabric (1.29.0)
+    # The bundled libfabric is vanilla upstream and lacks AWS EFA-specific patches required
+    # by the EFA kernel driver (2.17.2g). We prepend /opt/amazon/efa/lib to override ONLY
+    # libfabric/libefa/libibverbs, while keeping other bundled libs.
+    env_vars = {
+        "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
+        "FI_PROVIDER": "efa",
+        "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
+        "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
+        "FI_EFA_MR_CACHE_ENABLE": "1",
+        "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
+        "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
+        # Explicitly disable all dmabuf/GPU direct paths
+        "FI_EFA_FORK_SAFE": "1",
+        "NIXL_DISABLE_DMABUF": "1",  # Force NIXL to use host staging
+        **extra_verbosity_flags,
+    }
+    
+    ray.init(runtime_env={"env_vars": env_vars})
     
     # Create placement group
     print(f"Creating placement group with {strategy_name}...")
