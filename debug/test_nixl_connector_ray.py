@@ -97,6 +97,15 @@ class EngineActor:
         self.node_ip = ray.util.get_node_ip_address()
         print(f"[{self._role}-TP{tp_rank}/{tp_size}] Running on node {self.node_ip}, GPU {self.gpu_id}")
         
+        # Debug: Print UCX-related environment variables
+        print(f"[{self._role}-TP{tp_rank}/{tp_size}] Environment check:")
+        ucx_vars = {k: v for k, v in os.environ.items() if k.startswith('UCX_') or k.startswith('FI_') or k.startswith('NIXL_')}
+        if ucx_vars:
+            for k, v in ucx_vars.items():
+                print(f"  {k}={v}")
+        else:
+            print("  ⚠️  No UCX/FI/NIXL env vars found!")
+        
         # Create KV cache tensors for each layer
         # Shape: [num_blocks, num_kv_heads, block_size, head_dim] (HND layout)
         # Using separate K and V tensors per layer (split_k_and_v=True case)
@@ -566,36 +575,45 @@ def main():
     print(f"  - Total cache size: {total_cache_bytes / 1e6:.2f} MB")
     print()
     
-    extra_verbosity_flags = {}
-    if args.verbose: 
-        extra_verbosity_flags = {
-            # "FI_LOG_LEVEL": "trace",  # Info level - debug logs every packet and kills performance
-            # "FI_LOG_PROV": "efa",
-            # "UCX_LOG_LEVEL": "trace",  # Info level for UCX too
-            # Removed: "UCX_PROTO_INFO": "y",  # This can be verbose
-            "NIXL_LOG_LEVEL": "DEBUG",  # TRACE is most verbose - use with caution!
-        }
-    
-    # Initialize Ray with EFA/UCX environment
+    # Initialize Ray with InfiniBand/RDMA environment
     print("Initializing Ray...")
     
-    # CRITICAL: Use AWS EFA libfabric (2.1.0amzn3.0) instead of bundled libfabric (1.29.0)
-    # The bundled libfabric is vanilla upstream and lacks AWS EFA-specific patches required
-    # by the EFA kernel driver (2.17.2g). We prepend /opt/amazon/efa/lib to override ONLY
-    # libfabric/libefa/libibverbs, while keeping other bundled libs.
-    env_vars = {
-        "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
-        "FI_PROVIDER": "efa",
-        "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
-        "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
-        "FI_EFA_MR_CACHE_ENABLE": "1",
-        "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
-        "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
-        # Explicitly disable all dmabuf/GPU direct paths
-        "FI_EFA_FORK_SAFE": "1",
-        "NIXL_DISABLE_DMABUF": "1",  # Force NIXL to use host staging
-        **extra_verbosity_flags,
-    }
+    # Build environment variables based on backends
+    env_vars = {}
+    
+    # Add backend-specific environment variables
+    use_libfabric = "LIBFABRIC" in BACKENDS
+    use_ucx = "UCX" in BACKENDS
+    
+    if use_libfabric:
+        # InfiniBand configuration with verbs provider
+        env_vars.update({
+            "FI_PROVIDER": "verbs",  # Use verbs provider for InfiniBand
+            "FI_VERBS_PREFER_XRC": "1",  # Prefer XRC for better performance
+            "FI_MR_CACHE_ENABLE": "1",
+            "FI_MR_CACHE_MAX_COUNT": "0",  # Unlimited
+        })
+        if args.verbose:
+            env_vars["FI_LOG_LEVEL"] = "debug"
+            env_vars["FI_LOG_PROV"] = "verbs"
+    
+    if use_ucx:
+        # Get the path to UCX modules directory in nixl.libs
+        import site
+        site_packages = site.getsitepackages()[0]
+        ucx_modules_dir = os.path.join(site_packages, "nixl.libs", "ucx")
+        
+        # UCX configuration - let UCX auto-detect best transports
+        env_vars.update({
+            "UCX_TLS": "all",  # Let UCX auto-detect and use all available transports
+            "UCX_MODULE_DIR": ucx_modules_dir,  # Help UCX find transport modules
+        })
+        if args.verbose:
+            env_vars["UCX_LOG_LEVEL"] = "debug"
+            env_vars["UCX_PROTO_INFO"] = "y"
+    
+    if args.verbose:
+        env_vars["NIXL_LOG_LEVEL"] = "DEBUG"
     
     ray.init(runtime_env={"env_vars": env_vars})
     

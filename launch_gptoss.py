@@ -5,7 +5,7 @@ import pprint
 from copy import deepcopy
 from ray import serve
 from ray.serve.llm import LLMConfig, build_openai_app
-from ray.llm._internal.serve.deployments.prefill_decode_disagg.prefill_decode_disagg import build_pd_openai_app
+from ray.serve.llm import build_pd_openai_app
 
 
 HEAD_NODE_RESOURCE_NAME = "node:__internal_head__"
@@ -44,30 +44,28 @@ BASE_LOG_ENGINE_METRICS = True
 
 
 def get_libfabric_env_vars(verbose=False):
-    """Return environment variables for libfabric/EFA configuration."""
+    """Return environment variables for libfabric/InfiniBand configuration."""
     env_vars = {
-        "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
-        # "FI_PROVIDER": "efa",
-        # "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
-        # "FI_EFA_MR_CACHE_ENABLE": "1",
-        # "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
-        # "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
-        "FI_EFA_FORK_SAFE": "1",
-        "FI_EFA_USE_DEVICE_RDMA": "1",
-        
+        "FI_PROVIDER": "verbs",  # Use verbs provider for InfiniBand
+        "FI_VERBS_PREFER_XRC": "1",  # Prefer XRC for better performance
+        "FI_MR_CACHE_ENABLE": "1",
+        "FI_MR_CACHE_MAX_COUNT": "0",  # Unlimited
     }
     if verbose:
         env_vars["FI_LOG_LEVEL"] = "debug"
-        env_vars["FI_LOG_PROV"] = "efa"
+        env_vars["FI_LOG_PROV"] = "verbs"
     return env_vars
 
 
 def get_ucx_env_vars(verbose=False):
     """Return environment variables for UCX configuration."""
+    import site
+    site_packages = site.getsitepackages()[0]
+    ucx_modules_dir = os.path.join(site_packages, "nixl.libs", "ucx")
+    
     env_vars = {
-        # "UCX_TLS": "self,cuda_ipc,cuda_copy,cma,tcp",
-        # "UCX_TLS": "all",
-        # "UCX_IB_GPU_DIRECT_RDMA": "yes",
+        "UCX_TLS": "all",  # Let UCX auto-detect and use all available transports
+        "UCX_MODULE_DIR": ucx_modules_dir,  # Help UCX find transport modules
     }
     if verbose:
         env_vars["UCX_LOG_LEVEL"] = "debug"
@@ -115,7 +113,9 @@ def get_kv_transfer_config(backends):
 
 def get_base_env_vars(use_libfabric, verbose=False):
     """Get base environment variables based on backend choice."""
-    env_vars = {}
+    env_vars = {
+        "NIXL_TELEMETRY_ENABLE": "1",  # Enable NIXL telemetry
+    }
     if verbose:
         env_vars["NIXL_LOG_LEVEL"] = "DEBUG"
         env_vars["VLLM_LOGGING_LEVEL"] = "DEBUG"
@@ -471,4 +471,5 @@ if __name__ == "__main__":
         pargs.use_ucx = True
     
     main(pargs)
+
 
