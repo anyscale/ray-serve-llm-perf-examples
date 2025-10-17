@@ -193,11 +193,11 @@ def launch_collocated(pargs):
 # TODO: Move the features of this to the pd-builder
 def build_pd_app_custom(pd_serving_args, ingress_options_override=None):
     
-    from ray.llm._internal.serve.deployments.prefill_decode_disagg.prefill_decode_disagg import PDServingArgs, PDProxyServer
+    from ray.llm._internal.serve.deployments.prefill_decode_disagg.builder_pd import PDServingArgs, PDProxyServer
     from ray.serve.llm import build_llm_deployment
     from ray.serve.llm.ingress import OpenAiIngress, make_fastapi_ingress
     
-    pd_config = PDServingArgs.model_validate(pd_serving_args).parse_args()
+    pd_config = PDServingArgs.model_validate(pd_serving_args)
     
     prefill_deployment = build_llm_deployment(
         pd_config.prefill_config, name_prefix="Prefill:"
@@ -280,7 +280,10 @@ def launch_pd(pargs):
                     "max_replicas": pargs.p_num,
                 },
             },
-            "resources_per_bundle": {"GPU": 1, f"node:{p_node['NodeName']}": 0.001},
+            "placement_group_config": {
+                "bundles": [{"GPU": 1, f"node:{p_node['NodeName']}": 0.001}] * pargs.p_tp,
+                "strategy": "PACK"
+            },
             "engine_kwargs": {
                 "tensor_parallel_size": pargs.p_tp,
                 "kv_transfer_config": get_kv_transfer_config(backends),
@@ -306,7 +309,10 @@ def launch_pd(pargs):
                     "max_replicas": pargs.d_num,
                 },
             },
-            "resources_per_bundle": {"GPU": 1, f"node:{d_node['NodeName']}": 0.001},
+            "placement_group_config": {
+                "bundles": [{"GPU": 1, f"node:{d_node['NodeName']}": 0.001}] * pargs.d_tp,
+                "strategy": "PACK"
+            },
             "engine_kwargs": {
                 "tensor_parallel_size": pargs.d_tp,
                 "kv_transfer_config": get_kv_transfer_config(backends),
