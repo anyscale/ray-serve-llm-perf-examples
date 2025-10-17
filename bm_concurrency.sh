@@ -142,21 +142,6 @@ for CONCURRENCY in "${CONCURRENCIES[@]}"; do
   
   mkdir -p "$RESULT_BASE_DIR"
   
-  # vllm bench serve \
-  #     --model $MODEL \
-  #     --served-model-name $SERVED_MODEL_NAME \
-  #     --backend vllm \
-  #     --base-url $BASE_URL \
-  #     --ignore-eos \
-  #     --num-prompts $NUM_PROMPTS \
-  #     --max-concurrency $CONCURRENCY \
-  #     --request-rate 1000000000 \
-  #     --dataset-name random \
-  #     --random-input-len $INPUT_LEN \
-  #     --random-output-len $OUTPUT_LEN \
-  #     --save-result --result-dir "$RESULT_BASE_DIR" \
-  #     --result-filename "$FILE_NAME"
-
   vllm bench serve \
       --model $MODEL \
       --served-model-name $SERVED_MODEL_NAME \

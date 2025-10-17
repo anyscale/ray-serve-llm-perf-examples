@@ -47,12 +47,14 @@ def get_libfabric_env_vars(verbose=False):
     """Return environment variables for libfabric/EFA configuration."""
     env_vars = {
         "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
-        "FI_PROVIDER": "efa",
-        "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
-        "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
-        "FI_EFA_MR_CACHE_ENABLE": "1",
-        "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
-        "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
+        # "FI_PROVIDER": "efa",
+        # "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
+        # "FI_EFA_MR_CACHE_ENABLE": "1",
+        # "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
+        # "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
+        "FI_EFA_FORK_SAFE": "1",
+        "FI_EFA_USE_DEVICE_RDMA": "1",
+        
     }
     if verbose:
         env_vars["FI_LOG_LEVEL"] = "debug"
@@ -64,7 +66,8 @@ def get_ucx_env_vars(verbose=False):
     """Return environment variables for UCX configuration."""
     env_vars = {
         # "UCX_TLS": "self,cuda_ipc,cuda_copy,cma,tcp",
-        "UCX_TLS": "all"
+        # "UCX_TLS": "all",
+        # "UCX_IB_GPU_DIRECT_RDMA": "yes",
     }
     if verbose:
         env_vars["UCX_LOG_LEVEL"] = "debug"
