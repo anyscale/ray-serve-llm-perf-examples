@@ -584,7 +584,7 @@ def main():
     # by the EFA kernel driver (2.17.2g). We prepend /opt/amazon/efa/lib to override ONLY
     # libfabric/libefa/libibverbs, while keeping other bundled libs.
     env_vars = {
-        "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
+        "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:/usr/local/ucx/lib:/usr/local/nixl/lib/x86_64-linux-gnu:/usr/local/nixl/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
         "FI_PROVIDER": "efa",
         "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
         "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
