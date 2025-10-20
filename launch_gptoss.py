@@ -215,11 +215,6 @@ def launch_pd(pargs):
                 "tensor_parallel_size": pargs.p_tp,
                 "kv_transfer_config": get_kv_transfer_config(backends),
             },
-            "runtime_env": {
-                "env_vars": {
-                    "VLLM_IS_PREFILL": "1",
-                }
-            }
         }
     )
     
