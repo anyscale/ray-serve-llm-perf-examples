@@ -2,10 +2,9 @@ import argparse
 import os
 import ray
 import pprint
-from copy import deepcopy
 from ray import serve
-from ray.serve.llm import LLMConfig, build_openai_app
-from ray.llm._internal.serve.deployments.prefill_decode_disagg.prefill_decode_disagg import build_pd_openai_app
+from ray.serve.llm import LLMConfig, build_openai_app, build_pd_openai_app
+from ray.llm._internal.common.dict_utils import deep_merge_dicts
 
 
 HEAD_NODE_RESOURCE_NAME = "node:__internal_head__"
@@ -31,30 +30,31 @@ Examples:
 
 
 # Base configuration shared across all modes
+# We are setting `max_model_len` to 16000, because when we deploy this model in 
+# TP=1, the full model length for even one request would exceed the kv-cache 
+# size that is available on the GPU. 
 BASE_ENGINE_KWARGS = {
     "max_model_len": 16000,
-    # "enable_expert_parallel": True,   
 }
 
+# We are setting `stream_batching_interval_ms` to 0, because we want to look at 
+# the standard deviation in latency during our benchmark, and batching would 
+# introduce additional variance. Turning up this value would improve latency a 
+# bit, but we don't want to do that for now.
 BASE_EXPERIMENTAL_CONFIGS = {
     "stream_batching_interval_ms": 0,
 }
-
-BASE_LOG_ENGINE_METRICS = True
-
 
 def get_libfabric_env_vars(verbose=False):
     """Return environment variables for libfabric/EFA configuration."""
     env_vars = {
         "LD_LIBRARY_PATH": "/opt/amazon/efa/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
         # "FI_PROVIDER": "efa",
+        # "FI_EFA_USE_DEVICE_RDMA": "0",  # DISABLE GPU Direct - not available on this system
         # "FI_EFA_ENABLE_SHM_TRANSFER": "0",  # Disable shared memory for cross-node
         # "FI_EFA_MR_CACHE_ENABLE": "1",
         # "FI_EFA_MR_MAX_CACHED_COUNT": "0",  # Unlimited
         # "FI_MR_CACHE_MAX_COUNT": "0",  # Also set generic libfabric MR cache
-        "FI_EFA_FORK_SAFE": "1",
-        "FI_EFA_USE_DEVICE_RDMA": "1",
-        
     }
     if verbose:
         env_vars["FI_LOG_LEVEL"] = "debug"
@@ -65,25 +65,13 @@ def get_libfabric_env_vars(verbose=False):
 def get_ucx_env_vars(verbose=False):
     """Return environment variables for UCX configuration."""
     env_vars = {
-        # "UCX_TLS": "self,cuda_ipc,cuda_copy,cma,tcp",
-        # "UCX_TLS": "all",
-        # "UCX_IB_GPU_DIRECT_RDMA": "yes",
+        "UCX_TLS": "all"
     }
     if verbose:
         env_vars["UCX_LOG_LEVEL"] = "debug"
         env_vars["UCX_PROTO_INFO"] = "y"
     return env_vars
 
-
-def deep_merge(base, override):
-    """Deep merge two dictionaries, with override taking precedence."""
-    result = deepcopy(base)
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
 
 
 def build_llm_config(model_id, model_source, overrides):
@@ -95,9 +83,8 @@ def build_llm_config(model_id, model_source, overrides):
         },
         "engine_kwargs": BASE_ENGINE_KWARGS.copy(),
         "experimental_configs": BASE_EXPERIMENTAL_CONFIGS.copy(),
-        "log_engine_metrics": BASE_LOG_ENGINE_METRICS,
     }
-    config = deep_merge(config, overrides)
+    config = deep_merge_dicts(config, overrides)
     print(f"LLMConfig: {pprint.pformat(config)}")
     return LLMConfig(**config)
 
@@ -123,40 +110,20 @@ def get_base_env_vars(use_libfabric, verbose=False):
         env_vars.update(get_libfabric_env_vars(verbose))
     else:
         env_vars.update(get_ucx_env_vars(verbose))
-    return env_vars
-
-# TODO: Do we need this? 
-def build_collocated_app_custom(llm_config, ingress_options_override=None):
-    from ray.serve.llm import build_llm_deployment
-    from ray.serve.llm.ingress import OpenAiIngress, make_fastapi_ingress
-    
-    deployment = build_llm_deployment(llm_config, name_prefix="Collocated:")
-    
-    ingress_options = OpenAiIngress.get_deployment_options([llm_config])
-    if ingress_options_override:
-        ingress_options = deep_merge(ingress_options, ingress_options_override)
-    
-    print("="*80)
-    print(f"Ingress options: {pprint.pformat(ingress_options)}")
-    print("="*80)
-    
-    ingress_cls = make_fastapi_ingress(OpenAiIngress)
-    
-    return serve.deployment(ingress_cls, **ingress_options).bind(
-        llm_deployments=[deployment]
-    )
-    
+    return env_vars    
 
 
 def launch_collocated(pargs):
     """Launch collocated (tensor parallel only) deployment."""
     ray.init()
-    print(f"Launching collocated deployment with TP={pargs.tensor_parallel_size}")
+    print(f"Launching collocated deployment with \
+        TP={pargs.tensor_parallel_size}...")
     print(f"Model: {pargs.model_source} (ID: {pargs.model_id})")
     print("="*80)
     
     
-    worker_nodes = [node for node in ray.nodes() if node["Alive"] and HEAD_NODE_RESOURCE_NAME not in node["Resources"]]
+    worker_nodes = [node for node in ray.nodes() \
+            if node["Alive"] and "GPU" in node["Resources"]]
     node = worker_nodes[0]
     node_resource = {f"node:{node['NodeName']}": 0.001}
     
@@ -171,71 +138,29 @@ def launch_collocated(pargs):
             "engine_kwargs": {
                 "tensor_parallel_size": pargs.tensor_parallel_size,
             },
-            "resources_per_bundle": {"GPU": 1, **node_resource},
+            "placement_group_config": {
+                "bundles": [
+                    {"GPU": 1, **node_resource} for _ in range(pargs.tensor_parallel_size)
+                ],
+            },
         }
     )
     
-    # TODO: HARDCODE to 16, to make our comparison fair.
+    # NOTE: HARDCODE to 16, to make our comparison fair.
     ingress_options_override = {
         "placement_group_bundles": [{"CPU": 1, **node_resource}],
         "autoscaling_config": {
             "min_replicas": 16,
             "max_replicas": 16,
-            "initial_replicas": 16,
         },
     }
 
-    # app = build_openai_app({"llm_configs": [llm_config]})
-    app = build_collocated_app_custom(llm_config, ingress_options_override=ingress_options_override)
+    app = build_openai_app({
+        "llm_configs": [llm_config],
+        "ingress_deployment_config": ingress_options_override
+    })
+
     serve.run(app, blocking=True)
-
-
-# TODO: Move the features of this to the pd-builder
-def build_pd_app_custom(pd_serving_args, ingress_options_override=None):
-    
-    from ray.llm._internal.serve.deployments.prefill_decode_disagg.prefill_decode_disagg import PDServingArgs, PDProxyServer
-    from ray.serve.llm import build_llm_deployment
-    from ray.serve.llm.ingress import OpenAiIngress, make_fastapi_ingress
-    
-    pd_config = PDServingArgs.model_validate(pd_serving_args).parse_args()
-    
-    prefill_deployment = build_llm_deployment(
-        pd_config.prefill_config, name_prefix="Prefill:"
-    )
-    decode_deployment = build_llm_deployment(
-        pd_config.decode_config, name_prefix="Decode:"
-    )
-    
-    print("="*80)
-    print(f"Proxy deployment config: {pprint.pformat(pd_config.proxy_deployment_config)}")
-    print("="*80)
-    
-    proxy_server_deployment = (
-        serve.deployment(PDProxyServer)
-        .options(**pd_config.proxy_deployment_config)
-        .bind(
-            prefill_server=prefill_deployment,
-            decode_server=decode_deployment,
-        )
-    )
-    
-    ingress_options = OpenAiIngress.get_deployment_options(
-        [pd_config.prefill_config, pd_config.decode_config]
-    )
-    if ingress_options_override:
-        ingress_options = deep_merge(ingress_options, ingress_options_override)
-        
-    print("="*80)
-    print(f"Ingress options: {pprint.pformat(ingress_options)}")
-    print("="*80)
-    
-    ingress_cls = make_fastapi_ingress(OpenAiIngress)
-    
-    return serve.deployment(ingress_cls, **ingress_options).bind(
-        llm_deployments=[proxy_server_deployment]
-    )
-    
-    
 
 
 def launch_pd(pargs):
@@ -249,7 +174,8 @@ def launch_pd(pargs):
     ray.init(runtime_env={"env_vars": ray_env_vars})
     is_packed = (pargs.mode == "pd-pack")
     
-    worker_nodes = [node for node in ray.nodes() if node["Alive"] and HEAD_NODE_RESOURCE_NAME not in node["Resources"]]
+    worker_nodes = [node for node in ray.nodes() \
+        if node["Alive"] and "GPU" in node["Resources"]]
     
     if not is_packed and len(worker_nodes) < 2:
         raise ValueError("At least 2 worker nodes are required for spread mode")
@@ -264,8 +190,10 @@ def launch_pd(pargs):
     
     print(f"Launching PD {'packed' if is_packed else 'spread'} mode:")
     print(f"  Model: {pargs.model_source} (ID: {pargs.model_id})")
-    print(f"  Prefill: {pargs.p_num} replicas with TP={pargs.p_tp} on {p_node['NodeName']}")
-    print(f"  Decode: {pargs.d_num} replicas with TP={pargs.d_tp} on {d_node['NodeName']}")
+    print(f"  Prefill: {pargs.p_num} replicas with TP={pargs.p_tp} \
+        on {p_node['NodeName']}")
+    print(f"  Decode: {pargs.d_num} replicas with TP={pargs.d_tp} \
+        on {d_node['NodeName']}")
     
     print("="*80)
     print("Prefill:")
@@ -280,7 +208,9 @@ def launch_pd(pargs):
                     "max_replicas": pargs.p_num,
                 },
             },
-            "resources_per_bundle": {"GPU": 1, f"node:{p_node['NodeName']}": 0.001},
+            "placement_group_config": {
+                "bundles": [{"GPU": 1, f"node:{p_node['NodeName']}": 0.001} for _ in range(pargs.p_tp)],
+            },
             "engine_kwargs": {
                 "tensor_parallel_size": pargs.p_tp,
                 "kv_transfer_config": get_kv_transfer_config(backends),
@@ -306,7 +236,9 @@ def launch_pd(pargs):
                     "max_replicas": pargs.d_num,
                 },
             },
-            "resources_per_bundle": {"GPU": 1, f"node:{d_node['NodeName']}": 0.001},
+            "placement_group_config": {
+                "bundles": [{"GPU": 1, f"node:{d_node['NodeName']}": 0.001} for _ in range(pargs.d_tp)],
+            },
             "engine_kwargs": {
                 "tensor_parallel_size": pargs.d_tp,
                 "kv_transfer_config": get_kv_transfer_config(backends),
@@ -315,7 +247,7 @@ def launch_pd(pargs):
     )
     print("="*80)
     
-    # TODO: Clean up, for now hardcode to 16 and if pack they will be on the same node as P or D.
+    # NOTE: HARDCODE to 16 and if pack they will be on the same node as P or D.
     proxy_deployment_config = {
         "autoscaling_config": {
             "min_replicas": 16,
@@ -324,29 +256,29 @@ def launch_pd(pargs):
         "max_ongoing_requests": 1e5,
     }    
 
-    # TODO: Clean this up as well, hardcode to 16, to make our comparison fair.
+    # NOTE: HARDCODE to 16, to make our comparison fair.
     ingress_options = {
         "autoscaling_config": {
             "min_replicas": 16,
             "max_replicas": 16,
-            # This is needed, because ingress options (including initial_replicas) are auto calcluated and we cannot just override min/max replica.
-            "initial_replicas": 16,
         },
     }
     
     # Make sure both Proxy and ingress map to the p node if packed
     if is_packed:
-        proxy_deployment_config["placement_group_bundles"] = [{"CPU": 1, f"node:{p_node['NodeName']}": 0.001}]
-        ingress_options["placement_group_bundles"] = [{"CPU": 1, f"node:{p_node['NodeName']}": 0.001}]
+        proxy_deployment_config["placement_group_bundles"] = [
+            {"CPU": 1, f"node:{p_node['NodeName']}": 0.001}]
+        ingress_options["placement_group_bundles"] = [
+            {"CPU": 1, f"node:{p_node['NodeName']}": 0.001}]
     
     pd_serving_args = {
         "prefill_config": p_config, 
         "decode_config": d_config,
         "proxy_deployment_config": proxy_deployment_config,
+        "ingress_deployment_config": ingress_options,
     }
 
-    app = build_pd_app_custom(
-        pd_serving_args, ingress_options_override=ingress_options)
+    app = build_pd_openai_app(pd_serving_args)
     
     serve.start(http_options={"host": "0.0.0.0"})
     serve.run(app, blocking=True)
@@ -403,8 +335,8 @@ def setup_arg_parser():
     parser.add_argument(
         "--p-num",
         type=int,
-        default=4,
-        help="Number of prefill replicas (default: 4)"
+        default=2,
+        help="Number of prefill replicas (default: 2)"
     )
     parser.add_argument(
         "--p-tp",
@@ -415,8 +347,8 @@ def setup_arg_parser():
     parser.add_argument(
         "--d-num",
         type=int,
-        default=2,
-        help="Number of decode replicas (default: 2)"
+        default=1,
+        help="Number of decode replicas (default: 1)"
     )
     parser.add_argument(
         "--d-tp",
@@ -471,4 +403,3 @@ if __name__ == "__main__":
         pargs.use_ucx = True
     
     main(pargs)
-
