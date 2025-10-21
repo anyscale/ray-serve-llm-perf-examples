@@ -8,7 +8,7 @@ Three experiments that tell the PD disaggregation story with reproducible script
 2. **Run experiments**: Execute the three scripts in order
 3. **Visualize**: `python ../viz.py --exps <experiment_dirs>`
 
-## The Three Experiments
+## The Three Experiments on 2xP5.48xlarge with EFA
 
 ### 1. TP Baselines - Understanding TTFT vs TPOT Trade-offs
 
@@ -100,3 +100,14 @@ All use 1P-TP4 : 1D-TP4 configuration.
 
 ![Network Impact Analysis](../plots/network_impact/comprehensive_analysis.png)
 *Figure: Pack vs Spread modes with different network configurations*
+
+
+## Results from 2x 8xH200 nodes with IB
+We also benchmarked the same setup on infinyband setup to see the difference.
+
+![IB Impact](../plots/pd_h200_ib/comprehensive_analysis.png)
+*Figure: Pack vs Spread modes on IB 2x8xH200s*
+
+We can see we have a good installation of NIXL + UCX on this setup as well. The difference between inter and intra node should be minimal for kv-cache transfer. If this is not the case, the network layer is not configured properly. 
+
+
