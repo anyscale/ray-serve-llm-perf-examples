@@ -53,8 +53,8 @@ def parse_experiment_config(exp_name: str) -> Optional[Dict[str, Any]]:
         config['otl'] = int(otl_match.group(1))
     
     # Try to extract prefill-decode configuration first: <NP>x(tp|tpep)<PTP>-<ND>x(tp|tpep)<DTP>
-    # Pattern: 2xtp2-2xtp2 or 2xtpep4-1xtp2, etc.
-    pd_pattern = r'(\d+)x(tp|tpep)(\d+)-(\d+)x(tp|tpep)(\d+)'
+    # Pattern: 2xtp2-2xtp2 or p1xtp4-d1xtp4, etc. (optional letter prefix before numbers)
+    pd_pattern = r'[a-z]?(\d+)x(tp|tpep)(\d+)-[a-z]?(\d+)x(tp|tpep)(\d+)'
     pd_match = re.search(pd_pattern, exp_name)
     
     if pd_match:
