@@ -41,7 +41,7 @@ echo ""
 
 # Baseline: Collocated TP=4 for comparison
 echo "Running collocated TP=4 baseline..."
-python launch_gptoss.py --mode collocated --tp 4 --num-replicas 2
+python launch_gptoss.py --mode collocated --tp 4 --num 2
 sleep 30
 ./run_bm.sh -e baseline_tp4 -t concurrency --itl ${ITL} --otl ${OTL}
 serve shutdown -y > /dev/null 2>&1
@@ -87,7 +87,7 @@ echo ""
 
 # Baseline: Collocated TP=2 for comparison
 echo "Running collocated TP=2 baseline..."
-python launch_gptoss.py --mode collocated --tp 2 --num-replicas 4
+python launch_gptoss.py --mode collocated --tp 2 --num 4
 sleep 30
 ./run_bm.sh -e baseline_tp2 -t concurrency --itl ${ITL} --otl ${OTL}
 serve shutdown -y > /dev/null 2>&1

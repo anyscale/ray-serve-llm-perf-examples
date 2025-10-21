@@ -22,13 +22,13 @@ echo "=========================================="
 echo "TP Baselines"
 echo "Understanding TTFT vs TPOT trade-offs"
 echo "ITL:OTL = ${ITL}:${OTL}"
-echo "Testing: TP1, TP2, TP4 (8 GPU configs)"
+echo "Testing: TP1, TP2, TP4"
 echo "=========================================="
 echo ""
 
 # TP=1, 8 replicas
 echo "Running TP=1 baseline..."
-python launch_gptoss.py --mode collocated --tp 1 --num-replicas 8
+python launch_gptoss.py --mode collocated --tp 1 --num 8
 sleep 30  # Wait for deployment
 ./run_bm.sh -e baseline_tp1 -t concurrency --itl ${ITL} --otl ${OTL}
 
@@ -40,7 +40,7 @@ sleep 10
 
 # TP=2, 4 replicas
 echo "Running TP=2 baseline..."
-python launch_gptoss.py --mode collocated --tp 2 --num-replicas 4
+python launch_gptoss.py --mode collocated --tp 2 --num 4
 sleep 30
 ./run_bm.sh -e baseline_tp2 -t concurrency --itl ${ITL} --otl ${OTL}
 
@@ -52,7 +52,7 @@ sleep 10
 
 # TP=4, 2 replicas
 echo "Running TP=4 baseline..."
-python launch_gptoss.py --mode collocated --tp 4 --num-replicas 2
+python launch_gptoss.py --mode collocated --tp 4 --num 2
 sleep 30
 ./run_bm.sh -e baseline_tp4 -t concurrency --itl ${ITL} --otl ${OTL}
 

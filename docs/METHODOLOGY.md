@@ -27,7 +27,7 @@ Deploys GPT-OSS-120B in different modes.
 ```bash
 # Collocated
 --tp <N>              # Tensor parallelism degree
---num-replicas <N>    # Number of replicas
+--num <N>             # Number of replicas
 
 # PD modes
 --p-num <N>           # Number of prefill replicas
@@ -35,12 +35,13 @@ Deploys GPT-OSS-120B in different modes.
 --d-num <N>           # Number of decode replicas
 --d-tp <N>            # Decode TP degree
 --use-ucx             # Use UCX backend (recommended)
+--use-libfabric       # Use libfabric backend (had issues, see DEBUGGING.md)
 ```
 
 **Examples:**
 ```bash
 # Collocated TP=2, 4 replicas
-python launch_gptoss.py --mode collocated --tp 2 --num-replicas 4
+python launch_gptoss.py --mode collocated --tp 2 --num 4
 
 # PD pack: 1P-TP2, 2D-TP2
 python launch_gptoss.py --mode pd-pack --p-num 1 --p-tp 2 --d-num 2 --d-tp 2 --use-ucx
