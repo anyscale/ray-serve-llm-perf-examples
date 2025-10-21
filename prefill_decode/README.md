@@ -12,7 +12,7 @@ A systematic exploration of Prefill-Decode (PD) disaggregation performance on re
 
 ## What you'll find here
 
-- **Reproducible experiments**: Three main experiments telling a coherent story
+- **Reproducible experiments**: A set of reproducible experiments showing the value of prefill-decode dissagregation 
 - **Working configurations**: Hardware and network setups validated on 2x p5.48xlarge (16x H100, EFA)
 - **Evolving observations**: What we're learning as we explore different configurations
 
