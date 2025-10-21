@@ -1,0 +1,81 @@
+FROM anyscale/ray:nightly-py311-cu126
+
+# INSTALL VLLM
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN uv pip install vllm==0.11.0 --torch-backend=auto --system
+
+# Configuration
+ENV UCX_INSTALL_PREFIX=/usr/local/ucx
+ENV NIXL_INSTALL_PREFIX=/usr/local/nixl
+ENV BUILD_DIR=/tmp/nixl-ucx-build
+ENV UCX_SHA=7e03b7820d683bbf7b8778cdad801a80f8f2c9cc
+ENV NIXL_SHA=5e1d37da90f08fe26d7fa37ca3d95ac093bea391
+
+# Install build dependencies
+# Note: We install rdma-core for verbs support. EFA drivers will be available at runtime on EFA instances.
+RUN sudo apt-get update && sudo apt-get install -y \
+    build-essential \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    git \
+    wget \
+    libibverbs-dev \
+    librdmacm-dev \
+    rdma-core \
+    ninja-build \
+    && sudo rm -rf /var/lib/apt/lists/*
+
+# Install meson and pybind11 for NIXL build
+RUN pip3 install --no-cache-dir meson pybind11
+
+# Build UCX 1.20 (master) with verbs/RDMA support
+# EFA transport will be available at runtime when running on EFA-enabled instances
+RUN mkdir -p ${BUILD_DIR} && \
+    cd ${BUILD_DIR} && \
+    git clone https://github.com/openucx/ucx.git && \
+    cd ucx && \
+    git checkout ${UCX_SHA} && \
+    ./autogen.sh && \
+    ./configure \
+        --prefix=${UCX_INSTALL_PREFIX} \
+        --enable-shared \
+        --disable-static \
+        --disable-doxygen-doc \
+        --enable-optimizations \
+        --enable-cma \
+        --enable-devel-headers \
+        --with-verbs \
+        --with-dm \
+        --enable-mt && \
+    make -j$(nproc) && \
+    sudo make install && \
+    sudo ldconfig && \
+    ${UCX_INSTALL_PREFIX}/bin/ucx_info -v
+
+# Build NIXL from source with custom UCX
+RUN cd ${BUILD_DIR} && \
+    git clone https://github.com/ai-dynamo/nixl.git && \
+    cd nixl && \
+    git checkout ${NIXL_SHA} && \
+    export PKG_CONFIG_PATH="${UCX_INSTALL_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}" && \
+    export LD_LIBRARY_PATH="${UCX_INSTALL_PREFIX}/lib:${LD_LIBRARY_PATH}" && \
+    meson setup builddir \
+        --prefix=${NIXL_INSTALL_PREFIX} \
+        -Ducx_path=${UCX_INSTALL_PREFIX} && \
+    cd builddir && \
+    ninja -j$(nproc) && \
+    sudo ninja install && \
+    sudo ldconfig && \
+    cd ${BUILD_DIR}/nixl && \
+    pip3 install --no-cache-dir .
+
+# Set runtime environment variables
+ENV LD_LIBRARY_PATH="${UCX_INSTALL_PREFIX}/lib:${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+ENV PKG_CONFIG_PATH="${UCX_INSTALL_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+ENV PATH="${UCX_INSTALL_PREFIX}/bin:${PATH}"
+
+# Clean up build directory to reduce image size
+RUN rm -rf ${BUILD_DIR}
+
