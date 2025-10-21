@@ -329,13 +329,13 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
                               chunk_size: int = DEFAULT_CHUNK_SIZE,
                               log_latency: bool = True,
                               log_concurrency: bool = True,
-                              use_interactivity: bool = False):
+                              use_interactivity: bool = False,
+                              throughput_metric: str = 'output'):
     """
-    Create a comprehensive 2x2 subplot figure with:
-    - Top-left: median_tpot_ms vs. concurrency
-    - Top-right: median_ttft_ms vs. concurrency
-    - Bottom-left: output_throughput vs. latency/interactivity
-    - Bottom-right: input_throughput vs. latency/interactivity
+    Create a comprehensive 1x3 subplot figure with:
+    - Left: median_tpot_ms vs. concurrency
+    - Middle: median_ttft_ms vs. concurrency
+    - Right: throughput vs. latency/interactivity
     
     Args:
         exp_data: Dictionary mapping experiment names to their data
@@ -344,17 +344,18 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
         use_normalized: If True, use normalized throughput metrics (default: True)
         latency_mode: Mode for calculating latency ('chunk', 'first_token', 'token')
         chunk_size: Chunk size for chunk latency mode
-        log_latency: If True, use logarithmic scale for latency/interactivity x-axis on bottom plots
+        log_latency: If True, use logarithmic scale for latency/interactivity x-axis on throughput plot
         log_concurrency: If True, use logarithmic scale for latency y-axis on latency-concurrency plots
-        use_interactivity: If True, use interactivity (1000/tpot) instead of latency on x-axis for bottom plots
+        use_interactivity: If True, use interactivity (1000/tpot) instead of latency on x-axis for throughput plot
+        throughput_metric: Which throughput to plot ('input', 'output', 'total')
     """
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
     
     # Color palette for experiments
     colors = plt.cm.tab10(range(len(exp_data)))
     
-    # Top-left: median_tpot_ms vs. concurrency
-    ax1 = axes[0, 0]
+    # Left: median_tpot_ms vs. concurrency
+    ax1 = axes[0]
     for (exp_name, data), color in zip(exp_data.items(), colors):
         metric_values = extract_metric(data, 'median_tpot_ms')
         if metric_values:
@@ -371,8 +372,8 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
     if log_concurrency:
         ax1.set_yscale('log')
     
-    # Top-right: median_ttft_ms vs. concurrency
-    ax2 = axes[0, 1]
+    # Middle: median_ttft_ms vs. concurrency
+    ax2 = axes[1]
     for (exp_name, data), color in zip(exp_data.items(), colors):
         metric_values = extract_metric(data, 'median_ttft_ms')
         if metric_values:
@@ -389,19 +390,57 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
     if log_concurrency:
         ax2.set_yscale('log')
     
-    # Bottom-left: output_throughput vs. latency/interactivity
-    ax3 = axes[1, 0]
-    throughput_metric = 'output_throughput_norm' if use_normalized else 'output_throughput'
+    # Right: throughput vs. latency/interactivity
+    ax3 = axes[2]
     req_throughput_metric = 'request_throughput_norm' if use_normalized else 'request_throughput'
     
+    # Determine which throughput metric to use
+    if throughput_metric == 'output':
+        metric_name = 'output_throughput_norm' if use_normalized else 'output_throughput'
+        ylabel_name = 'Output Throughput'
+    elif throughput_metric == 'input':
+        metric_name = 'input_throughput_norm' if use_normalized else 'input_throughput'
+        ylabel_name = 'Input Throughput'
+    elif throughput_metric == 'total':
+        metric_name = None  # Will calculate as input + output
+        ylabel_name = 'Total Throughput'
+    else:
+        raise ValueError(f"Invalid throughput_metric: {throughput_metric}. Must be 'input', 'output', or 'total'")
+    
     for (exp_name, data), color in zip(exp_data.items(), colors):
-        output_throughput = extract_metric(data, throughput_metric)
+        # Get or calculate throughput values
+        if metric_name and metric_name.endswith('_norm'):
+            # Use pre-calculated normalized metric
+            throughput_values = extract_metric(data, metric_name)
+        elif throughput_metric == 'output':
+            throughput_values = extract_metric(data, 'output_throughput')
+        elif throughput_metric == 'input':
+            if use_normalized:
+                throughput_values = extract_metric(data, 'input_throughput_norm')
+            else:
+                throughput_values = calculate_input_throughput(data)
+        elif throughput_metric == 'total':
+            # Calculate total as input + output
+            output_metric = 'output_throughput_norm' if use_normalized else 'output_throughput'
+            input_metric = 'input_throughput_norm' if use_normalized else 'input_throughput'
+            
+            output_values = extract_metric(data, output_metric)
+            if use_normalized:
+                input_values = extract_metric(data, input_metric)
+            else:
+                input_values = calculate_input_throughput(data)
+            
+            # Combine input and output
+            throughput_values = {}
+            for c in set(output_values.keys()) & set(input_values.keys()):
+                throughput_values[c] = output_values[c] + input_values[c]
+        
         median_tpot = extract_metric(data, 'median_tpot_ms')
         median_ttft = extract_metric(data, 'median_ttft_ms')
         request_throughput = extract_metric(data, req_throughput_metric)
         
-        if output_throughput and median_tpot:
-            common_concurrencies = set(output_throughput.keys()) & set(median_tpot.keys())
+        if throughput_values and median_tpot:
+            common_concurrencies = set(throughput_values.keys()) & set(median_tpot.keys())
             common_concurrencies = sorted(common_concurrencies)
             
             x_values = []
@@ -425,7 +464,7 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
                         continue
                 
                 x_values.append(x_val)
-                values.append(output_throughput[c])
+                values.append(throughput_values[c])
                 req_throughputs.append(request_throughput.get(c, 0))
             
             if x_values and values:
@@ -456,92 +495,13 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
         title_suffix = 'Chunk Latency'
     
     ax3.set_xlabel(xlabel, fontsize=11, fontweight='bold')
-    ylabel = 'Output Throughput (token/s/node)' if use_normalized else 'Output Throughput (token/s)'
+    ylabel = f'{ylabel_name} (token/s/node)' if use_normalized else f'{ylabel_name} (token/s)'
     ax3.set_ylabel(ylabel, fontsize=11, fontweight='bold')
-    ax3.set_title(f'Output Throughput vs {title_suffix}', fontsize=12, fontweight='bold')
+    ax3.set_title(f'{ylabel_name} vs {title_suffix}', fontsize=12, fontweight='bold')
     ax3.legend(fontsize=9, framealpha=0.9)
     ax3.grid(True, alpha=0.3)
     if log_latency:
         ax3.set_xscale('log')
-    
-    # Bottom-right: input_throughput vs. latency/interactivity
-    ax4 = axes[1, 1]
-    input_throughput_metric = 'input_throughput_norm' if use_normalized else None
-    
-    for (exp_name, data), color in zip(exp_data.items(), colors):
-        # Use normalized metric if available, otherwise calculate from raw data
-        if use_normalized:
-            input_throughput = extract_metric(data, input_throughput_metric)
-        else:
-            input_throughput = calculate_input_throughput(data)
-            
-        median_tpot = extract_metric(data, 'median_tpot_ms')
-        median_ttft = extract_metric(data, 'median_ttft_ms')
-        request_throughput = extract_metric(data, req_throughput_metric)
-        
-        if input_throughput and median_tpot:
-            common_concurrencies = set(input_throughput.keys()) & set(median_tpot.keys())
-            common_concurrencies = sorted(common_concurrencies)
-            
-            x_values = []
-            values = []
-            req_throughputs = []
-            
-            for c in common_concurrencies:
-                if use_interactivity:
-                    # Use interactivity: 1000 / tpot
-                    if median_tpot[c] > 0:
-                        x_val = 1000.0 / median_tpot[c]
-                    else:
-                        continue
-                else:
-                    # Use latency
-                    ttft = median_ttft.get(c) if median_ttft else None
-                    x_val = calculate_latency(
-                        median_tpot[c], ttft, latency_mode, chunk_size)
-                    
-                    if x_val is None:
-                        continue
-                
-                x_values.append(x_val)
-                values.append(input_throughput[c])
-                req_throughputs.append(request_throughput.get(c, 0))
-            
-            if x_values and values:
-                ax4.plot(x_values, values, marker='o', linewidth=2, 
-                        markersize=8, label=exp_name, color=color)
-                
-                # Annotate with request_throughput
-                for x, y, rps in zip(x_values, values, req_throughputs):
-                    ax4.annotate(f'{rps:.1f}', 
-                               xy=(x, y), 
-                               xytext=(5, 5), 
-                               textcoords='offset points',
-                               fontsize=8,
-                               alpha=0.7)
-    
-    # Set axis labels based on mode (same as bottom-left)
-    if use_interactivity:
-        xlabel = 'Interactivity (token/s/usr)'
-        title_suffix = 'Interactivity'
-    elif latency_mode == 'token':
-        xlabel = 'TPOT (ms)'
-        title_suffix = 'TPOT'
-    elif latency_mode == 'first_token':
-        xlabel = 'TTFT (ms)'
-        title_suffix = 'TTFT'
-    else:  # chunk
-        xlabel = f'Chunk Latency (ms, size={chunk_size})'
-        title_suffix = 'Chunk Latency'
-    
-    ax4.set_xlabel(xlabel, fontsize=11, fontweight='bold')
-    ylabel = 'Input Throughput (token/s/node)' if use_normalized else 'Input Throughput (token/s)'
-    ax4.set_ylabel(ylabel, fontsize=11, fontweight='bold')
-    ax4.set_title(f'Input Throughput vs {title_suffix}', fontsize=12, fontweight='bold')
-    ax4.legend(fontsize=9, framealpha=0.9)
-    ax4.grid(True, alpha=0.3)
-    if log_latency:
-        ax4.set_xscale('log')
     
     plt.tight_layout()
     
@@ -628,7 +588,15 @@ def main():
         '--use-interactivity',
         action=argparse.BooleanOptionalAction,
         default=False,
-        help='Use interactivity (1000/tpot) instead of latency on x-axis for bottom plots (use --use-interactivity to enable)'
+        help='Use interactivity (1000/tpot) instead of latency on x-axis for throughput plot (use --use-interactivity to enable)'
+    )
+    
+    parser.add_argument(
+        '--throughput-metric',
+        type=str,
+        choices=['input', 'output', 'total'],
+        default='output',
+        help='Which throughput metric to plot: input (prefill), output (decode), or total (input+output)'
     )
     
     args = parser.parse_args()
@@ -724,6 +692,7 @@ def main():
                   (f", chunk_size={args.chunk_size})" if args.latency_mode == 'chunk' else ")"))
         
         print(f"Log scale - latency/interactivity: {args.log_latency}, concurrency: {args.log_concurrency}")
+        print(f"Throughput metric: {args.throughput_metric}")
         plot_path = plot_dir / "comprehensive_analysis.png"
         create_comprehensive_plot(
             exp_data,
@@ -734,7 +703,8 @@ def main():
             chunk_size=args.chunk_size,
             log_latency=args.log_latency,
             log_concurrency=args.log_concurrency,
-            use_interactivity=args.use_interactivity
+            use_interactivity=args.use_interactivity,
+            throughput_metric=args.throughput_metric
         )
     
     print("\n" + "="*80)
