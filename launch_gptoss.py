@@ -64,9 +64,16 @@ def get_libfabric_env_vars(verbose=False):
 
 def get_ucx_env_vars(verbose=False):
     """Return environment variables for UCX configuration."""
-    env_vars = {
-        "UCX_TLS": "all"
-    }
+    env_vars = {}
+    
+    # Check if UCX_TLS is already set in environment (e.g., for testing TCP)
+    # If not, use "all" to let UCX choose the best transport
+    if "UCX_TLS" in os.environ:
+        env_vars["UCX_TLS"] = os.environ["UCX_TLS"]
+        print(f"Using UCX_TLS from environment: {env_vars['UCX_TLS']}")
+    else:
+        env_vars["UCX_TLS"] = "all"
+    
     if verbose:
         env_vars["UCX_LOG_LEVEL"] = "debug"
         env_vars["UCX_PROTO_INFO"] = "y"
@@ -160,7 +167,7 @@ def launch_collocated(pargs):
         "ingress_deployment_config": ingress_options_override
     })
 
-    serve.run(app, blocking=True)
+    serve.run(app)
 
 
 def launch_pd(pargs):
