@@ -1,197 +1,182 @@
 # Methodology
 
-This document explains how to design and run PD disaggregation experiments using the tools in this repository.
+This guide explains how to use the tools in this repository to run PD disaggregation experiments.
 
-## Experimental Design Philosophy
+## Overview
 
-The goal is to systematically explore how different configurations affect the throughput vs latency trade-off for specific workloads. Key dimensions to explore:
+We provide three main experiment scripts that tell a coherent story:
 
-1. **Deployment modes**: Collocated vs PD-pack vs PD-spread
-2. **Parallelism**: Tensor Parallelism (TP) degrees for prefill and decode
-3. **Replica ratios**: P:D ratio (e.g., 1:1, 1:2, 2:1)
-4. **Workloads**: ITL (Input Token Length) and OTL (Output Token Length) combinations
-5. **Network backends**: UCX vs libfabric (for multi-node)
+1. **TP Baselines** (`experiments/tp-baselines.sh`): Understand TTFT vs TPOT trade-offs
+2. **PD Ratio Exploration** (`experiments/pd-ratio-sweep.sh`): Test various P:D ratios and TP configs
+3. **Network Impact** (`experiments/pack-vs-spread.sh`): Compare pack vs spread with network effects
 
-## Tools Overview
+Each script is self-contained with exact commands to reproduce results.
+
+## Tools
 
 ### `launch_gptoss.py`
 
-Unified launcher for deploying GPT-OSS-120B in different modes.
+Deploys GPT-OSS-120B in different modes.
 
-**Deployment Modes:**
-
-- `--mode collocated`: Traditional unified prefill+decode on same replicas
-- `--mode pd-pack`: PD with prefill and decode scheduled on same node (single-node PD)
-- `--mode pd-spread`: PD with prefill and decode on different nodes (multi-node PD)
+**Modes:**
+- `--mode collocated`: Traditional serving (prefill + decode together)
+- `--mode pd-pack`: PD with P and D on same node
+- `--mode pd-spread`: PD with P and D on different nodes
 
 **Key Parameters:**
-
-- `--tp <N>`: Tensor parallelism degree for collocated mode
-- `--p-num <N>`: Number of prefill replicas (PD modes)
-- `--p-tp <N>`: TP degree for prefill replicas
-- `--d-num <N>`: Number of decode replicas (PD modes)
-- `--d-tp <N>`: TP degree for decode replicas
-- `--use-ucx`: Use UCX backend for NIXL
-- `--use-libfabric`: Use libfabric backend for NIXL
-
-**Example:**
-
 ```bash
-# Collocated baseline with TP=2, 4 replicas
+# Collocated
+--tp <N>              # Tensor parallelism degree
+--num-replicas <N>    # Number of replicas
+
+# PD modes
+--p-num <N>           # Number of prefill replicas
+--p-tp <N>            # Prefill TP degree
+--d-num <N>           # Number of decode replicas
+--d-tp <N>            # Decode TP degree
+--use-ucx             # Use UCX backend (recommended)
+```
+
+**Examples:**
+```bash
+# Collocated TP=2, 4 replicas
 python launch_gptoss.py --mode collocated --tp 2 --num-replicas 4
 
-# PD single-node: 2 prefill (TP=1) + 4 decode (TP=2)
-python launch_gptoss.py --mode pd-pack --p-num 2 --p-tp 1 --d-num 4 --d-tp 2 --use-ucx
+# PD pack: 1P-TP2, 2D-TP2
+python launch_gptoss.py --mode pd-pack --p-num 1 --p-tp 2 --d-num 2 --d-tp 2 --use-ucx
 
-# PD multi-node: spread prefill and decode across nodes
+# PD spread: 1P-TP4, 1D-TP4 (cross-node)
 python launch_gptoss.py --mode pd-spread --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
 ```
 
 ### `run_bm.sh`
 
-Benchmark runner that executes concurrency or request rate sweeps.
+Runs benchmark sweeps against a deployed model.
 
-**Key Parameters:**
-
-- `-e|--exp-name <NAME>`: Experiment identifier
-- `-t|--type <concurrency|request-rate>`: Benchmark sweep type
-- `-c|--concurrency <LIST>`: Concurrency values (e.g., "4,8,16" or "all")
-- `-r|--request-rate <LIST>`: Request rate values (e.g., "1,2,4" or "all")
-- `--itl <N>`: Input token length
-- `--otl <N>`: Output token length
-- `--mode <mixed|prefill-only|decode-only>`: Benchmark mode
-- `-s|--smoke`: Run smoke test only
-
-**Benchmark Modes:**
-
-- `mixed`: Standard ITL:OTL workload (default)
-- `prefill-only`: ITL:1 (measure prefill performance)
-- `decode-only`: 1:OTL (approximation, see limitations below)
-
-**Example:**
-
+**Parameters:**
 ```bash
-# Run concurrency sweep for ITL=5000, OTL=250
-./run_bm.sh -e my_experiment -t concurrency --itl 5000 --otl 250
-
-# Run request rate sweep with custom rates
-./run_bm.sh -e rate_test -t request-rate -r "1,2,4,8" --itl 5000 --otl 250
-
-# Smoke test to verify deployment
-./run_bm.sh --smoke
+-e|--exp-name <NAME>     # Experiment identifier
+-t|--type <TYPE>         # concurrency or request-rate
+-c|--concurrency <LIST>  # e.g., "4,8,16" or "all"
+-r|--request-rate <LIST> # e.g., "1,2,4" or "all"
+--itl <N>                # Input token length
+--otl <N>                # Output token length
+--mode <MODE>            # mixed, prefill-only, or decode-only
+-s|--smoke               # Quick smoke test
 ```
 
-**Results Location:**
+**Examples:**
+```bash
+# Smoke test
+./run_bm.sh --smoke
 
-Benchmarks save results to `bm_results/<auto_generated_name>_<exp_name>/`
+# Concurrency sweep (default: 4,8,16,32,48,64)
+./run_bm.sh -e my_exp -t concurrency --itl 5000 --otl 250
+
+# Request rate sweep with custom rates
+./run_bm.sh -e rate_test -t request-rate -r "1,2,4,8" --itl 5000 --otl 250
+```
+
+**Benchmark Modes:**
+- `mixed` (default): Standard ITL:OTL workload
+- `prefill-only`: ITL:1 (isolate prefill)
+- `decode-only`: 1:OTL (approximation, see limitations)
+
+**Note**: Decode-only benchmarking via 1:OTL doesn't accurately model decode because it doesn't account for input length impact on generation speed. Proper decode-only support is tracked in [vllm#25986](https://github.com/vllm-project/vllm/pull/25986).
+
+**Results Location:**
+```
+bm_results/{model}_itl{ITL}_otl{OTL}_{mode}_{config}_{exp_name}/
+```
 
 ### `viz.py`
 
-Visualization tool for analyzing and plotting benchmark results.
+Visualizes and analyzes benchmark results.
 
 **Usage:**
-
 ```bash
-# Analyze a single experiment
-python viz.py --result-dir bm_results/gptoss_itl5000_otl250_mixed_4xtp2
-
 # Compare multiple experiments
-python viz.py --compare-dirs bm_results/exp1 bm_results/exp2 bm_results/exp3
+python viz.py --exps bm_results/exp1 bm_results/exp2 bm_results/exp3
 
-# Generate specific plot types
-python viz.py --result-dir bm_results/exp1 --plot-type throughput-vs-tpot
+# Use normalized metrics (per-node throughput)
+python viz.py --exps bm_results/exp1 bm_results/exp2 --use-normalized
+
+# Change latency mode
+python viz.py --exps bm_results/exp1 --latency-mode token  # Use TPOT
+python viz.py --exps bm_results/exp1 --latency-mode first_token  # Use TTFT
+python viz.py --exps bm_results/exp1 --latency-mode chunk --chunk-size 16  # Use chunk latency
+
+# Use interactivity instead of latency
+python viz.py --exps bm_results/exp1 --use-interactivity
+
+# Show tables only (no plots)
+python viz.py --exps bm_results/exp1 --no-plot
+
+# Save plots to custom directory
+python viz.py --exps bm_results/exp1 --plot-path custom_plots/
 ```
 
 **Key Metrics:**
-
 - **TTFT** (Time to First Token): Prefill latency
 - **TPOT** (Time per Output Token): Decode latency
 - **Throughput**: Tokens/sec (input, output, or total)
-- **Normalized throughput**: Per-node or per-GPU basis
+- **Normalized throughput**: Per-node or per-GPU for fair comparison
 
-## Designing a Systematic Experiment
+## Running the Three Main Experiments
 
-### Step 1: Define Your Baseline
+### 1. TP Baselines
 
-Start with collocated deployments to establish baseline performance:
-
-```bash
-# Test different TP degrees
-python launch_gptoss.py --mode collocated --tp 1 --num-replicas 8
-./run_bm.sh -e baseline_tp1 -t concurrency --itl 5000 --otl 250
-
-python launch_gptoss.py --mode collocated --tp 2 --num-replicas 4
-./run_bm.sh -e baseline_tp2 -t concurrency --itl 5000 --otl 250
-
-# Continue for TP=4, TP=8...
-```
-
-### Step 2: Explore PD Configurations
-
-Test PD with different P:D ratios and TP combinations:
+Establishes collocated baselines to understand TTFT vs TPOT trade-offs.
 
 ```bash
-# Single-node: 1 prefill (TP=2) + 2 decode (TP=2)
-python launch_gptoss.py --mode pd-pack --p-num 1 --p-tp 2 --d-num 2 --d-tp 2
-./run_bm.sh -e pd_1p2-2d2 -t concurrency --itl 5000 --otl 250
-
-# Vary the ratio
-python launch_gptoss.py --mode pd-pack --p-num 2 --p-tp 2 --d-num 2 --d-tp 2
-./run_bm.sh -e pd_2p2-2d2 -t concurrency --itl 5000 --otl 250
+cd experiments
+bash tp-baselines.sh
 ```
 
-### Step 3: Test Network Impact (Multi-Node)
+This runs:
+- TP=1 (8 replicas)
+- TP=2 (4 replicas)
+- TP=4 (2 replicas)
 
-Compare single-node vs multi-node PD:
+**Expected observations:**
+- TPOT: TP4 > TP2 > TP1 (decode improves with higher TP)
+- TTFT: Non-monotonic (TP2 best at low concurrency, TP1 at high)
+- Overall efficiency: TP4 > TP2 > TP1 (decode-dominated workload)
+
+### 2. PD Ratio Exploration
+
+Tests various P:D ratios and TP combinations.
 
 ```bash
-# Pack (single-node)
-python launch_gptoss.py --mode pd-pack --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
-./run_bm.sh -e pd_pack_1p4-1d4 -t concurrency --itl 5000 --otl 250
-
-# Spread (multi-node)
-python launch_gptoss.py --mode pd-spread --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
-./run_bm.sh -e pd_spread_1p4-1d4 -t concurrency --itl 5000 --otl 250
+cd experiments
+bash pd-ratio-sweep.sh
 ```
 
-### Step 4: Analyze and Compare
+This runs three parts:
+- **Part 1**: D:TP4 configs (1P-TP4:1D-TP4, 1P-TP2:1D-TP4, 2P-TP2:1D-TP4)
+- **Part 2**: D:TP2 ratios (3:1, 2:1, 1:1, 1:2, 1:3)
+- **Part 3**: P:TP1, D:TP2 configs (1:1, 2:1, 4:1)
+
+**Expected observations:**
+- Optimal ratio shifts with throughput regime
+- PD can beat collocated in token efficiency (especially TP4-TP4)
+- Dynamic ratio adjustment matters
+
+### 3. Network Impact
+
+Compares pack vs spread with different network configurations.
 
 ```bash
-# Generate comparison plots
-python viz.py --compare-dirs \
-  bm_results/baseline_tp2 \
-  bm_results/pd_1p2-2d2 \
-  bm_results/pd_2p2-2d2
+cd experiments
+bash pack-vs-spread.sh
 ```
 
-## Reproducibility Checklist
+This runs:
+- Pack mode (same node, CUDA IPC)
+- Spread with SRD (cross-node, good network)
+- Spread with TCP (cross-node, forced bad network)
 
-When documenting an experiment, include:
-
-- [ ] Exact command used for deployment (`launch_gptoss.py`)
-- [ ] Exact command used for benchmarking (`run_bm.sh`)
-- [ ] Hardware configuration (node count, GPU type, networking)
-- [ ] Software versions (vLLM, NIXL, Ray)
-- [ ] Workload parameters (ITL, OTL, concurrency/rate values)
-- [ ] Result location in `bm_results/`
-- [ ] Generated figures
-- [ ] Any environment variables or special configuration
-
-## Important Notes
-
-### Decode-Only Benchmarking Limitation
-
-The current `decode-only` mode (1:OTL) doesn't realistically model decode-only performance because it doesn't account for the impact of input token length on generation speed. Proper decode-only benchmarking is being developed in [vllm#25986](https://github.com/vllm-project/vllm/pull/25986).
-
-### Current vLLM Constraint
-
-vLLM doesn't currently allow P:TPN, D:TPM where N > M. This means prefill can't have a higher TP degree than decode. This limitation may be removed in future versions.
-
-### Batching Configuration
-
-The base configuration sets `stream_batching_interval_ms: 0` to reduce latency variance during benchmarking. Increasing this value would improve average latency but introduce more variance.
-
-## Next Steps
-
-After running experiments, document your findings in `results/findings/` following the template in that directory.
-
+**Expected observations:**
+- Pack ≈ Spread (SRD) when network is good
+- Spread (TCP) << Pack shows network impact
+- Proper network config is critical

@@ -1,43 +1,39 @@
 # Setup Guide
 
-This guide documents hardware and software configurations that have been tested and verified to work for PD disaggregation experiments.
+This guide documents the hardware and software stack that has been tested and works for PD disaggregation experiments.
 
 ## Hardware Configuration
-
-### Tested Setup
 
 **Cluster**: 1 head node + 2 worker nodes
 - **Worker nodes**: 2x p5.48xlarge instances (AWS)
   - 8x H100 GPUs per node (16 GPUs total)
-  - EFA networking enabled
+  - EFA networking enabled for cross-node communication
   - NVLink for intra-node GPU communication
 
 **Model**: GPT-OSS-120B (openai/gpt-oss-120b)
 
+This hardware enables testing:
+- **Single-node configs**: Up to 8 GPUs (TP1-8, various PD ratios)
+- **Cross-node configs**: All 16 GPUs for PD spread experiments
+
 ## Software Stack
 
-### Verified Versions
-
-The following combination has been tested and works:
+### Tested Versions
 
 ```
 vllm==0.11.0
 nixl==0.6.1 (built from source with UCX 1.20.0+)
 flashinfer-python==0.2.14.post1
-ray nightly (to be released as 2.51.0)
+ray==2.51.0 (nightly at time of testing)
 ```
 
-### Important Notes on Dependencies
+### Key Dependencies
 
-**vLLM**
-- Version 0.11.0 was the latest at the time of testing
-- Newer versions may introduce API changes requiring adjustments
-- Check Ray Serve documentation for currently supported vLLM versions
-
-**NIXL**
-- Release 0.6.1 is the first to support libfabric plugin
-- **Known Issue**: libfabric plugin has issues on EFA (see [vllm#27055](https://github.com/vllm-project/vllm/issues/27055))
-- **Working Solution**: Build NIXL against UCX 1.20.0+ with SRD backend support for EFA
+**NIXL 0.6.1 with UCX**
+- **Critical**: Must build from source with UCX 1.20.0+ for EFA support
+- **libfabric had issues**: At time of writing, had data corruption issues with vLLM (tracked in [vllm#27055](https://github.com/vllm-project/vllm/issues/27055))
+- **UCX with SRD backend**: Provides correct performance on EFA
+- See installation procedure below
 
 ## NIXL + UCX + EFA Setup
 
@@ -51,14 +47,14 @@ The full installation script is available at `/debug/build_nixl_ucx_efa.sh`. Key
 2. Build NIXL 0.6.1 against the custom UCX installation
 3. Verify the installation using the test script
 
-See [DEBUGGING.md](DEBUGGING.md) for verification procedures.
 
-### Why UCX?
+### Why UCX with SRD?
 
-UCX with SRD (Scalable Reliable Datagram) backend provides:
-- Proper EFA support on AWS p5 instances
-- Significantly better performance than misconfigured libfabric
-- Correct rdma/verbs usage
+- **Correct functionality**: libfabric had data corruption issues with vLLM at time of writing
+- **Performance**: 10-12 GB/s cross-node bandwidth on EFA
+- **EFA support**: SRD backend optimized for AWS EFA
+
+Without proper UCX configuration, network can be 5-10x slower or have correctness issues.
 
 ## Environment Setup
 
@@ -76,29 +72,24 @@ Verify cluster status:
 ray status
 ```
 
-### Model Configuration
-
-The model configuration uses `max_model_len: 16000` to accommodate TP=1 deployments. With the full model length, even a single request would exceed available KV cache on one GPU.
-
 ## Validation
 
-Before running experiments, validate your setup:
+Before running experiments:
 
-1. **Smoke test**: Run `./run_bm.sh --smoke` to verify basic deployment
-2. **NIXL connectivity**: Use `debug/test_nixl_connector_ray.py` to verify network layer
-3. **GPU detection**: Check that all GPUs are visible to Ray
+1. **Verify Ray cluster**: `ray status` should show all GPUs
+2. **Test network layer**:
+   ```bash
+   RAY_DEDUP_LOGS=0 python debug/test_nixl_connector_ray.py \
+     --strategy spread --backends UCX \
+     --num-blocks 3750 --num-layers 50 --blocks 512
+   ```
+   - Expected: 10-12 GB/s cross-node bandwidth
+   - Should show "transport: srd" or "srd_x"
+3. **Smoke test**: `./run_bm.sh --smoke` to verify deployment works
 
-## Adaptability
+## Adapting to Other Hardware
 
-This setup has been validated on the hardware configuration above. Adaptation to other setups may require:
-- Adjusting parallelism degrees (TP, PP, EP) based on available GPUs
-- Different NIXL/UCX configuration for non-EFA networks
-- Model selection based on GPU memory
-- Workload parameters based on use case
+This setup is specific to 2x p5.48xlarge with EFA. For other configurations:
 
-## Related Documentation
-
-- [DEBUGGING.md](DEBUGGING.md): Troubleshooting NIXL and networking issues
-- [METHODOLOGY.md](METHODOLOGY.md): How to use the experiment tools
-- Ray Serve PD Setup: [docs.ray.io](https://docs.ray.io/en/master/serve/llm/user-guides/prefill-decode.html)
-
+- **Non-EFA networks**: May need different UCX or libfabric configuration
+- **Different workloads**: Changes in ITL/OTL, and model might change the optimal setup and pareto curves.
