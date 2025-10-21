@@ -4,7 +4,7 @@ Troubleshooting guide for NIXL, UCX, and EFA issues in PD disaggregation experim
 
 ## Known Issue: libfabric Backend
 
-**At the time of writing, libfabric backend had correctness and functionality issues with vLLM.**
+**At the time of writing, libfabric backend had correctness and functionality issues with vLLM. [Link](https://github.com/vllm-project/vllm/issues/27055)**
 
 **Observed symptoms:**
 - **Homogeneous TP** (P-TP == D-TP): KV cache blocks contain all zeros, model outputs gibberish
@@ -28,7 +28,7 @@ python launch_gptoss.py --mode pd-spread --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 -
 
 ### NIXL Logging Impact
 
-`NIXL_LOGGING_LEVEL=DEBUG` reduces performance by 5-10x. Only use for active troubleshooting.
+`NIXL_LOGGING_LEVEL=DEBUG` reduces performance by 5-10x. Only use for active troubleshooting. 
 
 ### UCX Transport Backend
 
