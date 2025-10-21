@@ -13,7 +13,7 @@ This guide documents the hardware and software stack that has been tested and wo
 **Model**: GPT-OSS-120B (openai/gpt-oss-120b)
 
 This hardware enables testing:
-- **Single-node configs**: Up to 8 GPUs (TP1-8, various PD ratios)
+- **Single-node configs**: Up to 8 GPUs (TP2-8, various PD ratios)
 - **Cross-node configs**: All 16 GPUs for PD spread experiments
 
 ## Software Stack

@@ -37,7 +37,7 @@ echo ""
 
 python launch_gptoss.py --mode pd-pack --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
 sleep 30
-./run_bm.sh -e pack_1p4-1d4 -t concurrency --itl ${ITL} --otl ${OTL}
+./run_bm.sh -e pack_p1xtp4-d1xtp4 -t concurrency --itl ${ITL} --otl ${OTL}
 serve shutdown -y > /dev/null 2>&1
 sleep 10
 
@@ -59,7 +59,7 @@ echo ""
 
 python launch_gptoss.py --mode pd-spread --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
 sleep 30
-./run_bm.sh -e spread_srd_1p4-1d4 -t concurrency --itl ${ITL} --otl ${OTL}
+./run_bm.sh -e spread_srd_p1xtp4-d1xtp4 -t concurrency --itl ${ITL} --otl ${OTL}
 serve shutdown -y > /dev/null 2>&1
 sleep 10
 
@@ -84,7 +84,7 @@ export UCX_TLS="tcp"
 
 python launch_gptoss.py --mode pd-spread --p-num 1 --p-tp 4 --d-num 1 --d-tp 4 --use-ucx
 sleep 30
-./run_bm.sh -e spread_tcp_1p4-1d4 -t concurrency --itl ${ITL} --otl ${OTL}
+./run_bm.sh -e spread_tcp_p1xtp4-d1xtp4 -t concurrency --itl ${ITL} --otl ${OTL}
 serve shutdown -y > /dev/null 2>&1
 
 # Unset UCX_TLS for future runs
@@ -103,13 +103,26 @@ echo ""
 echo "Expected observations:"
 echo "  1. Pack ≈ Spread (SRD): Network properly configured"
 echo "  2. Spread (TCP) << Pack: Bad network severely degrades performance"
-echo "  3. Pack/Spread may beat TP8 collocated in efficiency"
+echo "  3. Network layer is critical for PD performance"
 echo ""
-echo "Visualization command:"
-echo "python viz.py --exps \\"
-echo "  bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_1xtp4-1xtp4_pack_* \\"
-echo "  bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_1xtp4-1xtp4_spread_srd_* \\"
-echo "  bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_1xtp4-1xtp4_spread_tcp_*"
+echo "Generating visualization..."
+echo ""
+
+python viz.py \
+  --exps \
+    bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_baseline_2xtp4 \
+    bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_pack_p1xtp4-d1xtp4 \
+    bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_spread_srd_p1xtp4-d1xtp4 \
+    bm_results/gptoss_itl${ITL}_otl${OTL}_mixed_spread_tcp_p1xtp4-d1xtp4 \
+  --plot-path plots/network_impact \
+  --latency-mode token \
+  --use-normalized \
+  --log-latency \
+  --log-concurrency \
+  --throughput-metric output
+
+echo ""
+echo "Visualization saved to: plots/network_impact/comprehensive_analysis.png"
 echo ""
 echo "Key takeaway: Proper network configuration (SRD on EFA) is critical."
 echo "Use debug/test_nixl_connector_ray.py to validate network before benchmarking."

@@ -17,16 +17,17 @@ Three experiments that tell the PD disaggregation story with reproducible script
 **Purpose**: Establish collocated baselines to understand conflicting optimization needs.
 
 **What it runs**:
-- TP=1 (8 replicas)
 - TP=2 (4 replicas)  
 - TP=4 (2 replicas)
 
 **Key observations**:
-- **TPOT (decode)**: TP4 > TP2 > TP1 (monotonic improvement)
-- **TTFT (prefill)**: Non-monotonic (TP2 best at low concurrency, TP1 at high)
-- **Overall efficiency**: TP4 > TP2 > TP1 (workload is decode-dominated)
+- **TPOT (decode)**: TP4 better than TP2 (higher TP improves decode especially at higher concurrency)
+- **TTFT (prefill)**: TP2 better at low concurrency, TP4 at high concurrency
+- **Overall efficiency**: TP4 > TP2 (workload is decode-dominated)
 
-**Takeaway**: There's a fundamental trade-off between optimizing for prefill (TTFT) and decode (TPOT). This motivates PD disaggregation.
+**Takeaway**: There's a fundamental trade-off between optimizing for prefill (TTFT) and decode (TPOT). One of the reasons to do PD as we can independently optimize P and D.
+
+![TP Baselines Analysis](../plots/tp_baselines/comprehensive_analysis.png)
 
 ---
 
@@ -44,9 +45,6 @@ Three experiments that tell the PD disaggregation story with reproducible script
 
 **Part 2: D:TP2 ratio exploration**
 - P:TP2, D:TP2 with ratios: 3:1, 2:1, 1:1, 1:2, 1:3
-
-**Part 3: P:TP1, D:TP2 (lower prefill TP)**
-- 1P-TP1 : 1D-TP2, 2P-TP1 : 1D-TP2, 4P-TP1 : 1D-TP2
 
 **Key observations**:
 
@@ -66,9 +64,15 @@ Three experiments that tell the PD disaggregation story with reproducible script
 - Need dynamic ratio adjustment for different SLAs
 - Must sweep configurations empirically for your workload
 
+![PD Ratio DTP4 Analysis](../plots/pd_ratio_dtp4/comprehensive_analysis.png)
+*Figure: PD ratio exploration with D:TP4 configurations*
+
+![PD Ratio DTP2 Analysis](../plots/pd_ratio_dtp2/comprehensive_analysis.png)
+*Figure: PD ratio exploration with D:TP2 configurations*
+
 ---
 
-### 3. Network Impact - Pack vs Spread
+### 3. Network Impact - Inter node vs. Intra node communication
 
 **Script**: `bash pack-vs-spread.sh`
 
@@ -77,7 +81,7 @@ Three experiments that tell the PD disaggregation story with reproducible script
 **What it runs**:
 - Pack mode (same node, CUDA IPC)
 - Spread with SRD (cross-node, good network)
-- Spread with TCP (cross-node, forced bad network)
+- Spread with TCP (cross-node, emulates bad transport layer fallback)
 
 All use 1P-TP4 : 1D-TP4 configuration.
 
@@ -91,3 +95,8 @@ All use 1P-TP4 : 1D-TP4 configuration.
 2. **With bad network (TCP): Spread << Pack**
    - Forced TCP transport: ~100x slower
    - Shows critical importance of network config
+
+**Takeaway**: PD disaggregation works well across nodes with proper network setup (UCX+EFA), making it practical for large-scale deployments.
+
+![Network Impact Analysis](../plots/network_impact/comprehensive_analysis.png)
+*Figure: Pack vs Spread modes with different network configurations*

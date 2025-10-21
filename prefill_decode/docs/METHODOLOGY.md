@@ -136,14 +136,13 @@ bash tp-baselines.sh
 ```
 
 This runs:
-- TP=1 (8 replicas)
 - TP=2 (4 replicas)
 - TP=4 (2 replicas)
 
 **Expected observations:**
-- TPOT: TP4 > TP2 > TP1 (decode improves with higher TP)
-- TTFT: Non-monotonic (TP2 best at low concurrency, TP1 at high)
-- Overall efficiency: TP4 > TP2 > TP1 (decode-dominated workload)
+- TPOT: TP4 > TP2 (decode improves with higher TP)
+- TTFT: TP2 better at low concurrency, TP4 at high concurrency
+- Overall efficiency: TP4 > TP2 (decode-dominated workload)
 
 ### 2. PD Ratio Exploration
 
@@ -154,10 +153,9 @@ cd experiments
 bash pd-ratio-sweep.sh
 ```
 
-This runs three parts:
+This runs two parts:
 - **Part 1**: D:TP4 configs (1P-TP4:1D-TP4, 1P-TP2:1D-TP4, 2P-TP2:1D-TP4)
 - **Part 2**: D:TP2 ratios (3:1, 2:1, 1:1, 1:2, 1:3)
-- **Part 3**: P:TP1, D:TP2 configs (1:1, 2:1, 4:1)
 
 **Expected observations:**
 - Optimal ratio shifts with throughput regime
