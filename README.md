@@ -1,53 +1,19 @@
-# Ray Serve Prefill-Decode Disaggregation: An Exploration Guide
+# Ray Serve LLM Performance Benchmarks
 
-**Living Document**: This repository is actively evolving as we explore PD disaggregation across different workloads, hardware, and network configurations.
+Reproducible benchmark snapshots exploring different aspects of Ray Serve LLM performance. Each benchmark includes experiments, tooling, and debugging utilities to help replicate the approach on different workloads, models, and hardware stacks.
 
-## What is this repository?
+## Benchmarks
 
-A systematic exploration of Prefill-Decode (PD) disaggregation performance on real hardware using Ray Serve's LLM PD support. We demonstrate:
+### [Prefill-Decode Disaggregation](prefill_decode/)
 
-- **When PD helps**: Understanding the trade-offs between prefill and decode optimization
-- **Configuration choices that matter**: P:D ratios, TP degrees, and their interactions
-- **Network layer impact**: How network configuration affects multi-node PD performance
+Systematic exploration of PD disaggregation performance on real hardware (GPT-OSS-120B on 2x p5.48xlarge with H100s and EFA). Includes:
 
-## What you'll find here
+- Three narrative experiments showing when PD helps and configuration trade-offs
+- Working NIXL + UCX + EFA setup for multi-node KV cache transfer
+- Tools for benchmarking, visualization, and debugging
 
-- **Reproducible experiments**: Three main experiments telling a coherent story
-- **Working configurations**: Hardware and network setups validated on 2x p5.48xlarge (16x H100, EFA)
-- **Evolving observations**: What we're learning as we explore different configurations
+See [prefill_decode/README.md](prefill_decode/README.md) to get started.
 
-## What this is NOT
+---
 
-- Prescriptive recommendations (configurations are workload and hardware dependent)
-- Complete (we're actively exploring and adding new findings)
-
-## Quick Navigation
-
-- **New to PD?** Read the [Ray Serve PD documentation](https://docs.ray.io/en/master/serve/llm/user-guides/prefill-decode.html)
-- **Setup**: See [docs/SETUP.md](docs/SETUP.md) for tested configurations
-- **Experiments and findings**: [experiments/README.md](experiments/README.md)
-- **Debugging**: [docs/DEBUGGING.md](docs/DEBUGGING.md) for NIXL/UCX/EFA troubleshooting
-
-## Experiments
-
-Three experiments that tell the PD disaggregation story:
-
-1. **[TP Baselines](experiments/tp-baselines.sh)**: Understanding TTFT vs TPOT trade-offs in collocated mode
-2. **[PD Ratio Exploration](experiments/pd-ratio-sweep.sh)**: How P:D ratios and TP configurations affect performance
-3. **[Network Impact](experiments/pack-vs-spread.sh)**: Pack vs spread placement and network layer effects
-
-See [experiments/README.md](experiments/README.md) for detailed findings and how to run experiments.
-
-## Tools
-
-- `launch_gptoss.py`: Deploy GPT-OSS-120B in collocated, PD-pack, or PD-spread modes
-- `run_bm.sh`: Benchmark runner with concurrency and request rate sweeps
-- `viz.py`: Visualization tool for analyzing results
-- `query_completion.py`: Smoke test utility
-
-## Background
-
-For architectural details and the theory behind PD disaggregation:
-- [Ray Serve PD User Guide](https://docs.ray.io/en/master/serve/llm/user-guides/prefill-decode.html)
-- [Ray Serve PD Architecture](https://docs.ray.io/en/master/serve/llm/architecture/serving-patterns/prefill-decode.html)
-
+**Note**: This repository is actively evolving. Additional benchmark angles will be added as we explore different Ray Serve LLM optimization strategies.

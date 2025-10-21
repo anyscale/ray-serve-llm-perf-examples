@@ -32,6 +32,7 @@ Deploys GPT-OSS-120B in different modes.
 # PD modes
 --p-num <N>           # Number of prefill replicas
 --p-tp <N>            # Prefill TP degree
+
 --d-num <N>           # Number of decode replicas
 --d-tp <N>            # Decode TP degree
 --use-ucx             # Use UCX backend (recommended)
