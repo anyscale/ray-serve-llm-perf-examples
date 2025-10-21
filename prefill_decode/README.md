@@ -1,12 +1,12 @@
 # Ray Serve Prefill-Decode Disaggregation: An Exploration Guide
 
-**Living Document**: This repository is actively evolving as we explore PD disaggregation across different workloads, hardware, and network configurations.
+**Living Document**: This repository is actively evolving as we explore PD disaggregation across different workloads, hardware, and network configurations. 
 
 ## What is this repository?
 
 A systematic exploration of Prefill-Decode (PD) disaggregation performance on real hardware using Ray Serve's LLM PD support. We demonstrate:
 
-- **When PD helps**: Understanding the trade-offs between prefill and decode optimization
+- **When PD helps**: Understanding the trade-offs between prefill and decode optimization through some example congigurations.
 - **Configuration choices that matter**: P:D ratios, TP degrees, and their interactions
 - **Network layer impact**: How network configuration affects multi-node PD performance
 
