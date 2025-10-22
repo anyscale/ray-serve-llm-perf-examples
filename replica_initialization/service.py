@@ -58,7 +58,7 @@ def run_experiment(model_name, experiment_name):
 
     llm_config = LLMConfig(
         model_loading_config={
-            "model_id": model_name,
+            "model_id": "model",
             "model_source": EXPERIMENT_NAME_TO_MODEL_SOURCE[model_name][experiment_name],
         },
         deployment_config={
@@ -79,10 +79,9 @@ def run_experiment(model_name, experiment_name):
             }
         },
         runtime_env={"env_vars": {
-            "VLLM_USE_V1": "1",
-            "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
-            "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
-            "AWS_SESSION_TOKEN": os.environ["AWS_SESSION_TOKEN"],
+            # "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+            # "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+            # "AWS_SESSION_TOKEN": os.environ["AWS_SESSION_TOKEN"],
         }},
     )
 
