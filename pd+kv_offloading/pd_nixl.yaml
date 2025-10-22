@@ -1,0 +1,54 @@
+# PD + NIXL configuration (1P1D, TP=4 each)
+# Disaggregated prefill-decode with GPU-to-GPU KV transfer via NIXL
+applications:
+  - name: gptoss-pd-nixl
+    route_prefix: /
+    import_path: builder:pd_builder
+    runtime_env:
+      env_vars:
+        UCX_TLS: "all"
+    args:
+      prefill_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+          kv_transfer_config:
+            kv_connector: NixlConnector
+            kv_role: kv_both
+            backends: ["UCX"]
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      decode_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+          kv_transfer_config:
+            kv_connector: NixlConnector
+            kv_role: kv_both
+            backends: ["UCX"]
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      proxy_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+        max_ongoing_requests: 100000
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+

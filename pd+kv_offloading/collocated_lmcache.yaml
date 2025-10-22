@@ -1,0 +1,35 @@
+# Collocated + LMCache configuration (TP=4)
+# Adds LMCache for KV cache offloading to CPU
+applications:
+  - name: gptoss-collocated-lmcache
+    route_prefix: /
+    import_path: builder:collocated_builder
+    runtime_env:
+      # NOTE: LMCache env variables are passed through via runtime_env
+      env_vars:
+        LMCACHE_LOCAL_CPU: "True"
+        LMCACHE_CHUNK_SIZE: "256"
+        LMCACHE_MAX_LOCAL_CPU_SIZE: "100"
+        LMCACHE_PD_BUFFER_DEVICE: "cpu"
+    args:
+      llm_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+          kv_transfer_config:
+            kv_connector: LMCacheConnectorV1
+            kv_role: kv_both
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+
