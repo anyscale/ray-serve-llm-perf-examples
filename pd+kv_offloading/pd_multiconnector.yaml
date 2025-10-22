@@ -1,0 +1,70 @@
+# PD + MultiConnector configuration (1P1D, TP=4 each)
+# Combines NIXL (GPU-to-GPU transfer) and LMCache (local offloading)
+applications:
+  - name: gptoss-pd-multiconnector
+    route_prefix: /
+    import_path: builder:pd_builder
+    runtime_env:
+      env_vars:
+        UCX_TLS: "all"
+        LMCACHE_LOCAL_CPU: "True"
+        LMCACHE_CHUNK_SIZE: "256"
+        LMCACHE_MAX_LOCAL_CPU_SIZE: "100"
+        LMCACHE_PD_BUFFER_DEVICE: "cpu"
+    args:
+      prefill_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+          kv_transfer_config:
+            kv_connector: MultiConnector
+            kv_role: kv_both
+            kv_connector_extra_config:
+              connectors:
+                - kv_connector: LMCacheConnectorV1
+                  kv_role: kv_both
+                - kv_connector: NixlConnector
+                  kv_role: kv_both
+                  backends: ["UCX"]
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      decode_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+          kv_transfer_config:
+            kv_connector: MultiConnector
+            kv_role: kv_both
+            kv_connector_extra_config:
+              connectors:
+                - kv_connector: LMCacheConnectorV1
+                  kv_role: kv_both
+                - kv_connector: NixlConnector
+                  kv_role: kv_both
+                  backends: ["UCX"]
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      proxy_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+        max_ongoing_requests: 100000
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+

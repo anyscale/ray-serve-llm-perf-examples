@@ -1,0 +1,26 @@
+# Collocated baseline configuration (TP=4)
+# No KV transfer - standard single-instance deployment
+applications:
+  - name: gptoss-collocated-baseline
+    route_prefix: /
+    import_path: builder:collocated_builder
+    runtime_env: {}
+    args:
+      llm_config:
+        model_loading_config:
+          model_id: gptoss
+          model_source: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          max_model_len: 16000
+          tensor_parallel_size: 4
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+
