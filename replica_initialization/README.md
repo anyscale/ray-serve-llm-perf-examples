@@ -6,7 +6,7 @@ Experiments measuring how fast Ray Serve LLM replicas can cold-start and serve t
 
 ## What you'll find here
 
-- **Completed experiments**: Results for 14 total experiments across three model sizes
+- **Completed experiments**: Results for experiments across three model sizes
 - **Performance graphs**: Visualizations showing initialization time improvements from different optimizations
 - **Terminal output**: Detailed timing breakdowns for model load and torch compile phases
 - **Reproducible setup**: Code to run experiments yourself with `service.py` and `client.py`
