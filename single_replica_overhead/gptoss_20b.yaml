@@ -1,0 +1,24 @@
+# Collocated baseline configuration (TP=4)
+# No KV transfer - standard single-instance deployment
+applications:
+  - name: gptoss-20b
+    route_prefix: /
+    import_path: builder:builder
+    runtime_env: {}
+    args:
+      llm_config:
+        model_loading_config:
+          model_id: openai/gpt-oss-20b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 1
+            max_replicas: 1
+        engine_kwargs:
+          tensor_parallel_size: 4
+          kv_cache_dtype: "fp8"
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      # ingress_deployment_config:
+      #   autoscaling_config:
+      #     min_replicas: 2
+      #     max_replicas: 2
