@@ -180,31 +180,58 @@ def extract_metric(data: Dict[int, Dict[str, Any]], metric: str) -> Dict[int, fl
 
 
 def create_comparison_table(exp_data: Dict[str, Dict[int, Dict[str, Any]]], 
-                            metric: str) -> pd.DataFrame:
+                            metric: str,
+                            exp_configs: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,
+                            normalize_concurrency: bool = False) -> pd.DataFrame:
     """
     Create a comparison table with concurrency as rows and experiments as columns.
     
     Args:
         exp_data: Dictionary mapping experiment names to their data
         metric: Metric to display in the table
+        exp_configs: Dictionary mapping experiment names to their parsed configs (needed for normalization)
+        normalize_concurrency: If True, normalize concurrency to single node baseline
         
     Returns:
         DataFrame with the comparison table
     """
-    # Collect all unique concurrency levels
+    # Collect all unique concurrency levels (potentially normalized)
     all_concurrencies = set()
-    for data in exp_data.values():
-        all_concurrencies.update(data.keys())
+    for exp_name, data in exp_data.items():
+        if normalize_concurrency and exp_configs and exp_configs.get(exp_name):
+            config = exp_configs[exp_name]
+            if config and 'num_gpus' in config:
+                num_gpus = config['num_gpus']
+                normalized_concurrencies = [normalize_concurrency_to_node(c, num_gpus) for c in data.keys()]
+                all_concurrencies.update(normalized_concurrencies)
+            else:
+                all_concurrencies.update(data.keys())
+        else:
+            all_concurrencies.update(data.keys())
     all_concurrencies = sorted(all_concurrencies)
     
     # Build the table
     table_data = {}
     for exp_name, data in exp_data.items():
         metric_values = extract_metric(data, metric)
-        table_data[exp_name] = [metric_values.get(c, None) for c in all_concurrencies]
+        
+        if normalize_concurrency and exp_configs and exp_configs.get(exp_name):
+            config = exp_configs[exp_name]
+            if config and 'num_gpus' in config:
+                num_gpus = config['num_gpus']
+                # Create mapping from normalized concurrency to metric value
+                normalized_values = {}
+                for c, value in metric_values.items():
+                    norm_c = normalize_concurrency_to_node(c, num_gpus)
+                    normalized_values[norm_c] = value
+                table_data[exp_name] = [normalized_values.get(c, None) for c in all_concurrencies]
+            else:
+                table_data[exp_name] = [metric_values.get(c, None) for c in all_concurrencies]
+        else:
+            table_data[exp_name] = [metric_values.get(c, None) for c in all_concurrencies]
     
     df = pd.DataFrame(table_data, index=all_concurrencies)
-    df.index.name = 'Concurrency'
+    df.index.name = 'Concurrency / Node' if normalize_concurrency else 'Concurrency'
     
     return df
 
@@ -284,6 +311,22 @@ def normalize_throughput_to_node(value: float, num_gpus: int) -> float:
     return value * (NUM_GPUS_PER_NODE / num_gpus)
 
 
+def normalize_concurrency_to_node(concurrency: int, num_gpus: int) -> float:
+    """
+    Normalize concurrency value to single node baseline.
+    
+    Args:
+        concurrency: Original concurrency value
+        num_gpus: Number of GPUs used in the experiment
+        
+    Returns:
+        Normalized concurrency value (as if running on a single node)
+    """
+    if num_gpus <= 0:
+        return concurrency
+    return concurrency * (NUM_GPUS_PER_NODE / num_gpus)
+
+
 def add_normalized_metrics(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
                            exp_configs: Dict[str, Optional[Dict[str, Any]]]):
     """
@@ -330,7 +373,8 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
                               log_latency: bool = True,
                               log_concurrency: bool = True,
                               use_interactivity: bool = False,
-                              throughput_metric: str = 'output'):
+                              throughput_metric: str = 'output',
+                              normalize_concurrency: bool = False):
     """
     Create a comprehensive 1x3 subplot figure with:
     - Left: median_tpot_ms vs. concurrency
@@ -348,6 +392,7 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
         log_concurrency: If True, use logarithmic scale for latency y-axis on latency-concurrency plots
         use_interactivity: If True, use interactivity (1000/tpot) instead of latency on x-axis for throughput plot
         throughput_metric: Which throughput to plot ('input', 'output', 'total')
+        normalize_concurrency: If True, normalize concurrency to single node baseline
     """
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
     
@@ -361,10 +406,19 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
         if metric_values:
             concurrencies = sorted(metric_values.keys())
             values = [metric_values[c] for c in concurrencies]
+            
+            # Normalize concurrency if requested
+            if normalize_concurrency:
+                config = exp_configs.get(exp_name)
+                if config and 'num_gpus' in config:
+                    num_gpus = config['num_gpus']
+                    concurrencies = [normalize_concurrency_to_node(c, num_gpus) for c in concurrencies]
+            
             ax1.plot(concurrencies, values, marker='o', linewidth=2, 
                     markersize=8, label=exp_name, color=color)
     
-    ax1.set_xlabel('Concurrency', fontsize=11, fontweight='bold')
+    conc_label = 'Concurrency / Node' if normalize_concurrency else 'Concurrency'
+    ax1.set_xlabel(conc_label, fontsize=11, fontweight='bold')
     ax1.set_ylabel('TPOT Median (ms)', fontsize=11, fontweight='bold')
     ax1.set_title('TPOT Median vs Concurrency', fontsize=12, fontweight='bold')
     ax1.legend(fontsize=9, framealpha=0.9)
@@ -379,10 +433,19 @@ def create_comprehensive_plot(exp_data: Dict[str, Dict[int, Dict[str, Any]]],
         if metric_values:
             concurrencies = sorted(metric_values.keys())
             values = [metric_values[c] for c in concurrencies]
+            
+            # Normalize concurrency if requested
+            if normalize_concurrency:
+                config = exp_configs.get(exp_name)
+                if config and 'num_gpus' in config:
+                    num_gpus = config['num_gpus']
+                    concurrencies = [normalize_concurrency_to_node(c, num_gpus) for c in concurrencies]
+            
             ax2.plot(concurrencies, values, marker='o', linewidth=2, 
                     markersize=8, label=exp_name, color=color)
     
-    ax2.set_xlabel('Concurrency', fontsize=11, fontweight='bold')
+    conc_label = 'Concurrency / Node' if normalize_concurrency else 'Concurrency'
+    ax2.set_xlabel(conc_label, fontsize=11, fontweight='bold')
     ax2.set_ylabel('TTFT Median (ms)', fontsize=11, fontweight='bold')
     ax2.set_title('TTFT Median vs Concurrency', fontsize=12, fontweight='bold')
     ax2.legend(fontsize=9, framealpha=0.9)
@@ -599,6 +662,13 @@ def main():
         help='Which throughput metric to plot: input (prefill), output (decode), or total (input+output)'
     )
     
+    parser.add_argument(
+        '--normalize-concurrency',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Normalize concurrency to single node baseline for easier comparison (use --normalize-concurrency to enable)'
+    )
+    
     args = parser.parse_args()
     
     # Load data from all experiments
@@ -656,7 +726,7 @@ def main():
         for metric, title in metrics_to_show:
             print(f"\n{title}:")
             print("-" * 80)
-            table = create_comparison_table(exp_data, metric)
+            table = create_comparison_table(exp_data, metric, exp_configs, args.normalize_concurrency)
             print(table.to_string())
         
         print("\n" + "="*80)
@@ -672,7 +742,7 @@ def main():
         for metric, title in normalized_metrics:
             print(f"\n{title}:")
             print("-" * 80)
-            table = create_comparison_table(exp_data, metric)
+            table = create_comparison_table(exp_data, metric, exp_configs, args.normalize_concurrency)
             print(table.to_string())
         print()
     
@@ -693,6 +763,7 @@ def main():
         
         print(f"Log scale - latency/interactivity: {args.log_latency}, concurrency: {args.log_concurrency}")
         print(f"Throughput metric: {args.throughput_metric}")
+        print(f"Normalize concurrency: {args.normalize_concurrency}")
         plot_path = plot_dir / "comprehensive_analysis.png"
         create_comprehensive_plot(
             exp_data,
@@ -704,7 +775,8 @@ def main():
             log_latency=args.log_latency,
             log_concurrency=args.log_concurrency,
             use_interactivity=args.use_interactivity,
-            throughput_metric=args.throughput_metric
+            throughput_metric=args.throughput_metric,
+            normalize_concurrency=args.normalize_concurrency
         )
     
     print("\n" + "="*80)

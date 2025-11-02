@@ -67,7 +67,15 @@ echo "=========================================="
 echo "Fetching model information from ${BASE_URL}/v1/models"
 echo "=========================================="
 
-MODEL_RESPONSE=$(curl -s -X GET "${BASE_URL}/v1/models")
+# Build curl command with optional API key
+CURL_CMD="curl -s -X GET"
+if [ -n "$OPENAI_API_KEY" ]; then
+  CURL_CMD="$CURL_CMD -H \"Authorization: Bearer $OPENAI_API_KEY\""
+  echo "Using OPENAI_API_KEY for authentication"
+fi
+CURL_CMD="$CURL_CMD \"${BASE_URL}/v1/models\""
+
+MODEL_RESPONSE=$(eval $CURL_CMD)
 if [ $? -ne 0 ]; then
   echo "Error: Failed to fetch model information from ${BASE_URL}/v1/models"
   exit 1
@@ -93,14 +101,14 @@ if [ "$SMOKE_TEST" = true ]; then
   echo "=========================================="
   echo ""
   
-  curl -X POST "${BASE_URL}/v1/completions" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"model\": \"${MODEL}\",
-      \"prompt\": \"Hello, world!\",
-      \"max_tokens\": 10,
-      \"temperature\": 0
-    }"
+  # Build curl command with optional API key
+  SMOKE_CURL_CMD="curl -X POST \"${BASE_URL}/v1/completions\" -H \"Content-Type: application/json\""
+  if [ -n "$OPENAI_API_KEY" ]; then
+    SMOKE_CURL_CMD="$SMOKE_CURL_CMD -H \"Authorization: Bearer $OPENAI_API_KEY\""
+  fi
+  SMOKE_CURL_CMD="$SMOKE_CURL_CMD -d '{\"model\": \"${MODEL}\", \"prompt\": \"Hello, world!\", \"max_tokens\": 10, \"temperature\": 0}'"
+  
+  eval $SMOKE_CURL_CMD
   
   echo ""
   echo "Smoke test completed"
