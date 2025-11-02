@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Simple plotting script for benchmark results.
-Plots throughput vs concurrency for aggregated results.
+Plots output tokens throughput vs concurrency for aggregated results.
 """
 
 import json
@@ -43,8 +43,8 @@ def load_results(exp_dir):
                 conc_match = re.search(r'conc(\d+)', json_file.name)
                 if conc_match:
                     conc = int(conc_match.group(1))
-                    # Use request_throughput as the throughput metric
-                    throughput = data.get('request_throughput')
+                    # Use output_throughput as the throughput metric
+                    throughput = data.get('output_throughput')
                     if throughput is not None:
                         results[conc] = throughput
         except Exception as e:
@@ -54,7 +54,7 @@ def load_results(exp_dir):
 
 
 def plot_results(exp_names, output_file=None):
-    """Plot throughput vs concurrency for multiple experiments, normalized per replica."""
+    """Plot output tokens throughput vs concurrency for multiple experiments, normalized per replica."""
     data_by_exp = {}
     
     for exp_name in exp_names:
@@ -90,8 +90,8 @@ def plot_results(exp_names, output_file=None):
         plt.plot(concurrency, throughput, marker='o', label=label, linewidth=2, markersize=6)
     
     plt.xlabel('Concurrency', fontsize=12)
-    plt.ylabel('Throughput per Replica (requests/sec)', fontsize=12)
-    plt.title('Throughput vs Concurrency (Normalized per Replica)', fontsize=14, fontweight='bold')
+    plt.ylabel('Output Tokens Throughput per Replica (tokens/sec)', fontsize=12)
+    plt.title('Output Tokens Throughput vs Concurrency (Normalized per Replica)', fontsize=14, fontweight='bold')
     plt.grid(True, alpha=0.3)
     plt.legend(loc='best')
     plt.tight_layout()
