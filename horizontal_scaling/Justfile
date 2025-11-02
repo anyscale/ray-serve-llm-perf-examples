@@ -42,25 +42,15 @@ clean EXP_NAME="":
     fi
 
 # Show experiment results
-# Usage: just results [EXP_NAME]
-# If EXP_NAME is provided, shows details for that experiment
-# Otherwise, lists all experiments
-results EXP_NAME="":
-    #!/usr/bin/env bash
-    if [ -n "{{EXP_NAME}}" ]; then
-        # Show specific experiment results
-        if [ -d "bm_results/{{EXP_NAME}}/all-parts" ]; then
-            echo "Aggregated results for {{EXP_NAME}}:"
-            ls -lh "bm_results/{{EXP_NAME}}/all-parts"
-        fi
-        if [ -d "bm_results/{{EXP_NAME}}" ]; then
-            echo ""
-            echo "Part directories:"
-            ls -d "bm_results/{{EXP_NAME}}/part"* 2>/dev/null | head -10
-        fi
-    else
-        # List all experiments
-        echo "Available experiments:"
-        find bm_results -type d -name "all-parts" -exec dirname {} \; | sort -u | sed 's|bm_results/||'
-    fi
+# Usage: just results [EXP_PATH ...] [OUTPUT.png]
+# If no arguments: lists all experiments
+# If EXP_PATH provided: shows details and plots (supports glob patterns like bm_results/rayoss251-x*)
+# If OUTPUT.png provided as last arg: saves all plots to that file
+# Examples:
+#   just results                                    # List all
+#   just results bm_results/rayoss251-x2            # Plot single experiment
+#   just results bm_results/rayoss251-x*             # Plot all matching experiments
+#   just results bm_results/rayoss251-x* output.png # Plot all matching to output.png
+results *ARGS='':
+    ./results.sh {{ARGS}}
 
