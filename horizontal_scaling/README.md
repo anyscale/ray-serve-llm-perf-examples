@@ -178,7 +178,8 @@ just results bm_results/*turbo* plots/turbo.png
 
 ### Analysis
 
-The following plots compare horizontal scaling characteristics between Ray Serve with open-source Ray (left) and Anyscale runtime optimizations (right):
+The following plots compare horizontal scaling characteristics between Ray Serve with open-source Ray (left) and Anyscale runtime optimizations (right).
+The bencmark is done on `gpt-oss-120b`, with TP4, and fp8 kv-cache on a workload with 5000:250 input/output distribution.
 
 <table>
   <tr>
