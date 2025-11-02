@@ -1,0 +1,66 @@
+# Justfile for horizontal scaling benchmarks
+# Install just: https://github.com/casey/just
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Run a full benchmark workflow: run + aggregate
+# Usage: just bench EXP_NAME [SCALING]
+# Examples:
+#   just bench my-exp          # Default: 1 client, all concurrency values
+#   just bench my-exp 4        # 4 parallel clients
+#   just bench my-exp 8        # 8 parallel clients
+bench EXP_NAME SCALING="1":
+    #!/usr/bin/env bash
+    ./run_bm.sh -e "{{EXP_NAME}}" -s {{SCALING}} && \
+    python3 aggregate_results.py "{{EXP_NAME}}"
+
+# Run benchmark with custom concurrency values
+# Usage: just bench-conc EXP_NAME SCALING CONCURRENCY
+# Example: just bench-conc my-exp 8 "4,8,16,32"
+bench-conc EXP_NAME SCALING CONCURRENCY:
+    #!/usr/bin/env bash
+    ./run_bm.sh -e "{{EXP_NAME}}" -s {{SCALING}} -c "{{CONCURRENCY}}" && \
+    python3 aggregate_results.py "{{EXP_NAME}}"
+
+# Run a smoke test to verify the server is accessible
+# Usage: just smoke
+# Uses OPENAI_API_URL environment variable (defaults to http://127.0.0.1:8000)
+smoke:
+    #!/usr/bin/env bash
+    ./run_bm.sh -e "smoke-test" --smoke
+
+# Clean up benchmark processes (with confirmation)
+# Usage: just clean [EXP_NAME]
+clean EXP_NAME="":
+    #!/usr/bin/env bash
+    if [ -n "{{EXP_NAME}}" ]; then
+        ./cleanup_bm.sh --exp-name "{{EXP_NAME}}"
+    else
+        ./cleanup_bm.sh
+    fi
+
+# Show experiment results
+# Usage: just results [EXP_NAME]
+# If EXP_NAME is provided, shows details for that experiment
+# Otherwise, lists all experiments
+results EXP_NAME="":
+    #!/usr/bin/env bash
+    if [ -n "{{EXP_NAME}}" ]; then
+        # Show specific experiment results
+        if [ -d "bm_results/{{EXP_NAME}}/all-parts" ]; then
+            echo "Aggregated results for {{EXP_NAME}}:"
+            ls -lh "bm_results/{{EXP_NAME}}/all-parts"
+        fi
+        if [ -d "bm_results/{{EXP_NAME}}" ]; then
+            echo ""
+            echo "Part directories:"
+            ls -d "bm_results/{{EXP_NAME}}/part"* 2>/dev/null | head -10
+        fi
+    else
+        # List all experiments
+        echo "Available experiments:"
+        find bm_results -type d -name "all-parts" -exec dirname {} \; | sort -u | sed 's|bm_results/||'
+    fi
+
