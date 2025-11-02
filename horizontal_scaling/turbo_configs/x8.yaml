@@ -1,0 +1,34 @@
+applications:
+  - name: gptoss-120b
+    route_prefix: /
+    import_path: builder:builder
+    runtime_env: 
+      env_vars:
+        VLLM_DISABLE_COMPILED_CACHE: "1"
+        RAY_SERVE_RUN_USER_CODE_IN_SEPARATE_THREAD: "0"
+        RAY_SERVE_REQUEST_PATH_LOG_BUFFER_SIZE: "1000"
+        RAY_SERVE_RUN_ROUTER_IN_SEPARATE_LOOP: "0"
+        RAY_SERVE_LOG_TO_STDERR: "0"
+    args:
+      llm_config:
+        model_loading_config:
+          model_id: openai/gpt-oss-120b
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 8
+            max_replicas: 8
+        engine_kwargs:
+          tensor_parallel_size: 4
+          kv_cache_dtype: "fp8"
+          enable_prefix_caching: false
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+        max_replicas_per_node: 4
+working_dir: .
+name: gptoss-120b-x8
+compute_config: 8xh100-workers:3
+image_uri: anyscale/image/rayturbo-251:1
