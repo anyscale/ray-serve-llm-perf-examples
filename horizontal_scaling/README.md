@@ -7,6 +7,7 @@ This benchmark demonstrates that Ray Serve scales horizontally with linear throu
 - [Overview](#overview)
   - [Key benchmark considerations](#key-benchmark-considerations)
   - [Runtime comparison](#runtime-comparison)
+  - [Setup](#setup)
 - [Quick start](#quick-start)
   - [Prerequisites](#prerequisites)
   - [Configuration](#configuration)
@@ -56,6 +57,13 @@ anyscale services deploy -f <config.yaml>
 ```
 
 After deployment, configure the URL and API key as environment variables for testing.
+
+### Setup
+
+- **Ray**: 2.51.0
+- **vLLM**: 0.11.0
+- **GPU nodes**: 8x NVIDIA H100 GPUs per node
+
 
 ## Quick start
 
