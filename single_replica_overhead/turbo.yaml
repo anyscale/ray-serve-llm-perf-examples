@@ -23,6 +23,6 @@ applications:
           min_replicas: 2
           max_replicas: 2
 working_dir: .
-name: gptoss-20b-oss
+name: gptoss-20b-turbo
 compute_config: 8xh100-workers:3
-image_uri: anyscale/image/rayoss-251:1
+image_uri: anyscale/image/rayturbo-251:1
