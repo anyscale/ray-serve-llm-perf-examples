@@ -1,0 +1,105 @@
+# PD + P2pNcclConnector configuration (DP16 TP1 EP)
+# Uses NCCL for GPU-to-GPU transfer with Data Parallel and Expert Parallel
+# 
+# NOTE: Automatic node partitioning is NOT enabled by default due to Ray Serve limitations.
+# Replicas will be scheduled across all available GPU nodes by Ray's default policy.
+# Needs vLLM 0.11.1+ for https://github.com/vllm-project/vllm/pull/26209
+applications:
+  - name: deepseek-pd-nccl
+    route_prefix: /
+    import_path: pd_dpep_builder:build_pd_dp_openai_app
+    runtime_env:
+      env_vars:
+        UCX_TLS: "all"
+        VLLM_ALL2ALL_BACKEND: "allgather_reducescatter"
+        NCCL_NET: "Socket"
+        NCCL_SOCKET_IFNAME: "eth0"
+        NCCL_IB_DISABLE: "1"
+        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    args:
+      prefill_config:
+        model_loading_config:
+          model_id: deepseek
+          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 16
+            max_replicas: 16
+          ray_actor_options:
+            resources:
+              prefill: 1
+        engine_kwargs:
+          max_model_len: 10000
+          data_parallel_size: 16
+          tensor_parallel_size: 1
+          enable_expert_parallel: true
+          enable_prefix_caching: true
+          load_format: dummy
+          compilation_config:
+            cudagraph_mode: "PIECEWISE"
+            cudagraph_capture_sizes: [1]
+          kv_transfer_config:
+            kv_connector: P2pNcclConnector
+            kv_role: kv_producer
+            kv_buffer_size: "1e1"
+            kv_port: "21001"
+            kv_connector_extra_config:
+              proxy_ip: 0.0.0.0
+              proxy_port: "30001"
+              http_port: "20001"
+            mem_pool_size_gb: "16"
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      decode_config:
+        model_loading_config:
+          model_id: deepseek
+          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
+        deployment_config:
+          autoscaling_config:
+            min_replicas: 16
+            max_replicas: 16
+          ray_actor_options:
+            resources:
+              decode: 1
+        engine_kwargs:
+          max_model_len: 10000
+          data_parallel_size: 16
+          tensor_parallel_size: 1
+          enable_expert_parallel: true
+          enable_prefix_caching: true
+          load_format: dummy
+          compilation_config:
+            cudagraph_mode: "PIECEWISE"
+            cudagraph_capture_sizes: [1]
+          kv_transfer_config:
+            kv_connector: P2pNcclConnector
+            kv_role: kv_consumer
+            kv_buffer_size: "1e10"
+            kv_port: "22001"
+            kv_connector_extra_config:
+              proxy_ip: 0.0.0.0
+              proxy_port: "30001"
+              http_port: "20002"
+            mem_pool_size_gb: "16"
+        experimental_configs:
+          stream_batching_interval_ms: 0
+      proxy_cls_config:
+        proxy_cls: builder:P2pNcclPDProxyServer
+        proxy_extra_kwargs:
+          proxy_ip: 0.0.0.0
+          proxy_port: "8000"
+          proxy_service_discovery_port: "30001"
+      proxy_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+        max_ongoing_requests: 100000
+      ingress_deployment_config:
+        autoscaling_config:
+          min_replicas: 16
+          max_replicas: 16
+working_dir: .
+query_auth_token_enabled: false
+name: deepseek-pd-nccl
+compute_config: 8xh100-workers-tcpx:1
+image_uri: anyscale/image/rui-tcpx-llm:44
