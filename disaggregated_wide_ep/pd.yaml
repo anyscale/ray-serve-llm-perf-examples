@@ -1,6 +1,7 @@
 # PD + P2pNcclConnector configuration (DP16 TP1 EP)
 # Uses NCCL for GPU-to-GPU transfer with Data Parallel and Expert Parallel
 # Needs vLLM 0.11.1+ for https://github.com/vllm-project/vllm/pull/26209
+# Run: `serve run pd.yaml`
 applications:
   - name: deepseek-pd-nccl
     route_prefix: /
@@ -8,15 +9,12 @@ applications:
     runtime_env:
       env_vars:
         UCX_TLS: "all"
-        VLLM_ALL2ALL_BACKEND: "allgather_reducescatter"
-        NCCL_P2P_DISABLE: "1"
-        NCCL_NET: "Socket"
         PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     args:
       prefill_config:
         model_loading_config:
           model_id: deepseek
-          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
+          model_source: deepseek-ai/DeepSeek-V3-0324
         deployment_config:
           ray_actor_options:
             resources:
@@ -48,10 +46,14 @@ applications:
         experimental_configs:
           stream_batching_interval_ms: 0
           dp_size_per_node: 8
+      runtime_env:
+        env_vars:
+          VLLM_USE_DEEP_GEMM: "1"
+          VLLM_ALL2ALL_BACKEND: "deepep_high_throughput"
       decode_config:
         model_loading_config:
           model_id: deepseek
-          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
+          model_source: deepseek-ai/DeepSeek-V3-0324
         deployment_config:
           ray_actor_options:
             resources:
@@ -83,6 +85,10 @@ applications:
         experimental_configs:
           stream_batching_interval_ms: 0
           dp_size_per_node: 8
+      runtime_env:
+        env_vars:
+          VLLM_USE_DEEP_GEMM: "1"
+          VLLM_ALL2ALL_BACKEND: "deepep_low_latency"
       proxy_cls_config:
         proxy_cls: pd_dpep_builder:P2pNcclPDProxyServer
         proxy_extra_kwargs:
