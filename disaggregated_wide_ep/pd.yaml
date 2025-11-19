@@ -1,11 +1,8 @@
 # PD + P2pNcclConnector configuration (DP16 TP1 EP)
 # Uses NCCL for GPU-to-GPU transfer with Data Parallel and Expert Parallel
-# 
-# NOTE: Automatic node partitioning is NOT enabled by default due to Ray Serve limitations.
-# Replicas will be scheduled across all available GPU nodes by Ray's default policy.
 # Needs vLLM 0.11.1+ for https://github.com/vllm-project/vllm/pull/26209
 applications:
-  - name: qwen-pd-nccl
+  - name: deepseek-pd-nccl
     route_prefix: /
     import_path: pd_dpep_builder:build_pd_dp_openai_app
     runtime_env:
@@ -14,22 +11,23 @@ applications:
         VLLM_ALL2ALL_BACKEND: "allgather_reducescatter"
         NCCL_P2P_DISABLE: "1"
         NCCL_NET: "Socket"
+        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     args:
       prefill_config:
         model_loading_config:
-          model_id: qwen
-          model_source: /hf_models/Qwen/Qwen3-235B-A22B-Instruct-2507-FP8/
+          model_id: deepseek
+          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
         deployment_config:
           ray_actor_options:
             resources:
               prefill: 1
           request_router_config:
-            request_router_class: builder:SessionAwareRequestRouter
+            request_router_class: pd_dpep_builder:SessionAwareRequestRouter
             request_routing_stats_period_s: 2
             request_routing_stats_timeout_s: 1
         engine_kwargs:
           max_model_len: 10000
-          data_parallel_size: 8
+          data_parallel_size: 16
           tensor_parallel_size: 1
           enable_expert_parallel: true
           enable_prefix_caching: true
@@ -52,19 +50,19 @@ applications:
           dp_size_per_node: 8
       decode_config:
         model_loading_config:
-          model_id: qwen
-          model_source: /hf_models/Qwen/Qwen3-235B-A22B-Instruct-2507-FP8/
+          model_id: deepseek
+          model_source: /hf_models/deepseek-ai/DeepSeek-V3-0324/
         deployment_config:
           ray_actor_options:
             resources:
               decode: 1
           request_router_config:
-            request_router_class: builder:SessionAwareRequestRouter
+            request_router_class: pd_dpep_builder:SessionAwareRequestRouter
             request_routing_stats_period_s: 2
             request_routing_stats_timeout_s: 1
         engine_kwargs:
           max_model_len: 10000
-          data_parallel_size: 8
+          data_parallel_size: 16
           tensor_parallel_size: 1
           enable_expert_parallel: true
           enable_prefix_caching: true
@@ -86,7 +84,7 @@ applications:
           stream_batching_interval_ms: 0
           dp_size_per_node: 8
       proxy_cls_config:
-        proxy_cls: builder:P2pNcclPDProxyServer
+        proxy_cls: pd_dpep_builder:P2pNcclPDProxyServer
         proxy_extra_kwargs:
           proxy_ip: 0.0.0.0
           proxy_port: "8000"
