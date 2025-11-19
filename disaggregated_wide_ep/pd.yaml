@@ -2,7 +2,7 @@
 # Uses NIXL connector for GPU-to-GPU KV transfer with Data + Expert Parallelism
 # Run: `serve run pd.yaml`
 applications:
-  - name: deepseek-pd-nccl
+  - name: deepseek-pd-wide-ep
     route_prefix: /
     import_path: pd_dpep_builder:build_pd_dp_openai_app
     args:
@@ -58,4 +58,4 @@ applications:
           max_replicas: 16
 working_dir: .
 query_auth_token_enabled: false
-name: deepseek-pd-nccl
+name: deepseek-pd-wide-ep
