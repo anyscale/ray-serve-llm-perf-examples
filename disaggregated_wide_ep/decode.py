@@ -1,5 +1,5 @@
 """
-DeepSeek-V3 decode-only deployment with DP=16 and EP.
+DeepSeek-V3 decode-only deployment with DP=32 and EP.
 
 Run: `python decode.py`
 """
@@ -14,11 +14,11 @@ from ray import serve
 decode_config = LLMConfig(
     model_loading_config={
         "model_id": "dsv3",
-        "model_source": "deepseek-ai/DeepSeek-V3-0324",
+        "model_source": "deepseek-ai/DeepSeek-V3",
     },
     engine_kwargs={
         "max_model_len": 10000,
-        "data_parallel_size": 16,
+        "data_parallel_size": 32,
         "tensor_parallel_size": 1,
         "enable_expert_parallel": True,
     },
