@@ -165,7 +165,11 @@ class PDInfoMixin:
                     break
         if port is None:
             raise ValueError("P2pNcclConnector or MultiConnector not found in the engine kwargs")
-        return replica_id, f"{ip}:{port}"
+        
+        dp_rank = self.engine.llm_config.engine_kwargs.get("data_parallel_rank", 0)
+        logger.info(f"pd_info: replica_id={replica_id}, port={port}, dp_rank={dp_rank}")
+        
+        return replica_id, f"{ip}:{port}", dp_rank
 
 class SessionAwareLLMServer(LLMServer, SesssionAwareMixin, PDInfoMixin):
     
@@ -216,34 +220,7 @@ class DPServerWithPDInfo(_DPServer, PDInfoMixin):
         await _DPServer.__init__(self, llm_config, dp_rank_assigner)
         logger.info(f"DPServerWithPDInfo.__init__ completed successfully")
     
-    @classmethod
-    def get_deployment_options(cls, llm_config: "LLMConfig"):
-        """Override to handle placement_group_bundles for DP deployments.
-        
-        For DP deployments with dp_size_per_node and explicit placement_group_config
-        (with node hints), we keep the placement_group_bundles to enforce the node
-        assignment. The builder sets up bundles with node hints like:
-        {"GPU": 1, "node:10.64.10.101": 0.001}
-        
-        This ensures each replica is placed on the correct node as specified by
-        the placement_group_config.
-        """
-        deployment_options = super().get_deployment_options(llm_config)
-        
-        dp_size = llm_config.engine_kwargs.get("data_parallel_size", 1)
-        if dp_size > 1:
-            dp_size_per_node = llm_config.experimental_configs.get("dp_size_per_node")
-            if dp_size_per_node is not None:
-                num_nodes = dp_size // dp_size_per_node
-                # placement_group_bundles should contain node hints set by the builder
-                # We keep them to enforce explicit node placement
-                logger.info(
-                    f"Using placement_group_bundles with node hints for DP deployment "
-                    f"(dp_size={dp_size}, dp_size_per_node={dp_size_per_node}, expected num_nodes={num_nodes})"
-                )
-        
-        return deployment_options
-
+    
 def build(serving_config_dict: Dict[str, Any]) -> Application:
     
     llm_configs = serving_config_dict["llm_configs"]
@@ -716,11 +693,36 @@ class P2pNcclPDProxyServer(PDProxyServer):
             store_request_session_mapping(request_id, session_id)
             logger.debug(f"Stored request-session mapping: request_id={request_id}, session_id={session_id}")
         
-        prefill_replica_id, prefill_zmq_address = await self.prefill_server.pd_info.remote()
-        decode_replica_id, decode_zmq_address = await self.decode_server.pd_info.remote()
+        # Pick a prefill replica, then systematically search for matching decode replica
+        # P2pNcclConnector assumes matching worker ranks: remote_address = base_port + self._rank
+        prefill_replica_id, prefill_zmq_address, prefill_dp_rank = await self.prefill_server.pd_info.remote()
+        
+        # Call decode pd_info multiple times to iterate through all replicas
+        # With 8 replicas, we should find a match within 8-16 calls
+        seen_decode_ranks = set()
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            decode_replica_id, decode_zmq_address, decode_dp_rank = await self.decode_server.pd_info.remote()
+            
+            if decode_dp_rank == prefill_dp_rank:
+                logger.info(
+                    f"✅ Found matching DP rank={prefill_dp_rank} on attempt {attempt+1}: "
+                    f"prefill={prefill_replica_id}, decode={decode_replica_id}")
+                break
+            
+            seen_decode_ranks.add(decode_dp_rank)
+            if attempt < 5 or attempt % 5 == 0:
+                logger.debug(
+                    f"Attempt {attempt+1}: decode DP rank {decode_dp_rank} != prefill {prefill_dp_rank}, "
+                    f"seen ranks so far: {sorted(seen_decode_ranks)}")
+        else:
+            logger.error(
+                f"❌ Failed to find decode with DP rank {prefill_dp_rank} after {max_attempts} attempts! "
+                f"Seen decode ranks: {sorted(seen_decode_ranks)}. Using mismatched pair.")
+        
         logger.debug(
-            f"prefill_zmq_address: {prefill_zmq_address}, prefill_replica_id: {prefill_replica_id}, "
-            f"decode_zmq_address: {decode_zmq_address}, decode_replica_id: {decode_replica_id}")
+            f"prefill: {prefill_replica_id}@{prefill_zmq_address} (dp_rank={prefill_dp_rank}), "
+            f"decode: {decode_replica_id}@{decode_zmq_address} (dp_rank={decode_dp_rank})")
 
         if request_id:
             nccl_request_id = (
@@ -754,21 +756,23 @@ class P2pNcclPDProxyServer(PDProxyServer):
         # and request_router will use request_meta
         serve.context._set_request_context(request_id=nccl_request_id)
 
+        # Send BOTH prefill and decode requests immediately (don't wait for prefill to complete)
+        # This is critical for NCCL P2P: decode must be processing to receive KV cache from prefill
         prefill_gen = getattr(self.prefill_server, method).options(stream=True).remote(prefill_request)
+        
+        decode_request = request.model_copy(deep=True)
+        decode_request.request_id = nccl_request_id
+        decode_gen = getattr(self.decode_server, method).options(stream=True).remote(decode_request)
 
+        # Consume and discard prefill output (only 1 token), then stream decode output
         prefill_chunk = await prefill_gen.__anext__()
-
+        
         if isinstance(prefill_chunk, ErrorResponse):
             logger.error(f"Prefill returned error: {prefill_chunk}")
             yield prefill_chunk
             return
 
-        # decode_request = self._prepare_decode_request(request, prefill_chunk)
-        # decode_request.request_id = nccl_request_id
-        decode_request = request.model_copy(deep=True)
-        decode_request.request_id = nccl_request_id
-        decode_gen = getattr(self.decode_server, method).options(stream=True).remote(decode_request)
-
+        # Stream decode output to client
         async for chunk in decode_gen:
             yield chunk
 
@@ -927,20 +931,15 @@ class SessionAwareRequestRouter(PowerOfTwoChoicesRequestRouter):
         candidate_replicas: List[RunningReplica],
         pending_request: Optional[PendingRequest] = None,
     ) -> List[List[RunningReplica]]:
-        logger.debug(f"[DEBUG] SessionAwareRequestRouter, pending_request: {pending_request}")
+        logger.info(f"🔍 SessionAwareRequestRouter.choose_replicas called, call_method: {pending_request.metadata.call_method}, request_id: {pending_request.metadata.request_id}")
 
         if pending_request.metadata.call_method == "llm_config":
             return await super().choose_replicas(candidate_replicas, pending_request)
         elif pending_request.metadata.call_method == "pd_info":
-            # Update our session mapping from latest replica stats
-            matched_replica = self._find_matched_replica(candidate_replicas, pending_request)
-            is_prefill = self.is_prefill_replica(candidate_replicas[0].replica_id.to_full_id_str())
-            if matched_replica:
-                logger.debug(f"SessionAwareRequestRouter found matched replica: {matched_replica}, is_prefill: {is_prefill}")
-                return [[matched_replica]]
-            else:
-                logger.debug(f"SessionAwareRequestRouter did not find matched replica for pd_info request {pending_request}, is_prefill: {is_prefill}")
-                return await super().choose_replicas(candidate_replicas, pending_request)
+            # For pd_info, ALWAYS use default routing (no session affinity)
+            # This allows PDProxyServer to iterate through different replicas to find matching DP ranks
+            logger.info(f"pd_info request - using default routing to iterate through replicas")
+            return await super().choose_replicas(candidate_replicas, pending_request)
 
         request_id = pending_request.metadata.request_id
         decode_ip, decode_port = self.parse_zmq_address(request_id, is_prefill=False)
@@ -949,12 +948,16 @@ class SessionAwareRequestRouter(PowerOfTwoChoicesRequestRouter):
         decode_replica_id = self.parse_replica_id(request_id, is_prefill=False)
         prefill_replica_id = self.parse_replica_id(request_id, is_prefill=True)
 
+        logger.info(f"🔍 Looking for replica with ID: prefill={prefill_replica_id} or decode={decode_replica_id}")
         for replica in candidate_replicas:
             if replica.replica_id.unique_id == decode_replica_id:
+                logger.info(f"✅ Found matching decode replica: {replica.replica_id.unique_id}")
                 return [[replica]]
             if replica.replica_id.unique_id == prefill_replica_id:
+                logger.info(f"✅ Found matching prefill replica: {replica.replica_id.unique_id}")
                 return [[replica]]
         
+        logger.error(f"❌ SessionAwareRequestRouter did not find matched replica for request {request_id}, candidates: {[r.replica_id.unique_id for r in candidate_replicas]}")
         raise ValueError(f"SessionAwareRequestRouter did not find matched replica for request {request_id}")
 
     def on_request_routed(
