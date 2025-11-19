@@ -166,8 +166,10 @@ class PDInfoMixin:
         if port is None:
             raise ValueError("P2pNcclConnector or MultiConnector not found in the engine kwargs")
         
+        # vLLM's P2pNcclEngine handles port offsetting via get_world_group().rank (which equals dp_rank)
+        # so we just return the base port from config
         dp_rank = self.engine.llm_config.engine_kwargs.get("data_parallel_rank", 0)
-        logger.info(f"pd_info: replica_id={replica_id}, port={port}, dp_rank={dp_rank}")
+        logger.info(f"pd_info: replica_id={replica_id}, base_port={port}, dp_rank={dp_rank}")
         
         return replica_id, f"{ip}:{port}", dp_rank
 
@@ -693,49 +695,47 @@ class P2pNcclPDProxyServer(PDProxyServer):
             store_request_session_mapping(request_id, session_id)
             logger.debug(f"Stored request-session mapping: request_id={request_id}, session_id={session_id}")
         
-        # Pick a prefill replica, then systematically search for matching decode replica
-        # P2pNcclConnector assumes matching worker ranks: remote_address = base_port + self._rank
         prefill_replica_id, prefill_zmq_address, prefill_dp_rank = await self.prefill_server.pd_info.remote()
+        decode_replica_id, decode_zmq_address, decode_dp_rank = await self.decode_server.pd_info.remote()
         
-        # Call decode pd_info multiple times to iterate through all replicas
-        # With 8 replicas, we should find a match within 8-16 calls
-        seen_decode_ranks = set()
-        max_attempts = 20
-        for attempt in range(max_attempts):
-            decode_replica_id, decode_zmq_address, decode_dp_rank = await self.decode_server.pd_info.remote()
-            
-            if decode_dp_rank == prefill_dp_rank:
-                logger.info(
-                    f"✅ Found matching DP rank={prefill_dp_rank} on attempt {attempt+1}: "
-                    f"prefill={prefill_replica_id}, decode={decode_replica_id}")
-                break
-            
-            seen_decode_ranks.add(decode_dp_rank)
-            if attempt < 5 or attempt % 5 == 0:
-                logger.debug(
-                    f"Attempt {attempt+1}: decode DP rank {decode_dp_rank} != prefill {prefill_dp_rank}, "
-                    f"seen ranks so far: {sorted(seen_decode_ranks)}")
-        else:
-            logger.error(
-                f"❌ Failed to find decode with DP rank {prefill_dp_rank} after {max_attempts} attempts! "
-                f"Seen decode ranks: {sorted(seen_decode_ranks)}. Using mismatched pair.")
+        # Adjust addresses to account for rank differences
+        # P2pNcclConnector calculates: remote_address = request_id_port + self._rank
+        # 
+        # For decode to reach prefill:
+        #   request_id_port + decode_rank = prefill_actual_port
+        #   prefill_adjusted = (base_port + prefill_rank) - decode_rank
+        #
+        # For prefill to reach decode:
+        #   request_id_port + prefill_rank = decode_actual_port
+        #   decode_adjusted = (base_port + decode_rank) - prefill_rank
         
+        prefill_ip, prefill_base_port = prefill_zmq_address.split(":")
+        prefill_adjusted_port = int(prefill_base_port) + prefill_dp_rank - decode_dp_rank
+        prefill_zmq_address_adjusted = f"{prefill_ip}:{prefill_adjusted_port}"
+        
+        decode_ip, decode_base_port = decode_zmq_address.split(":")
+        decode_adjusted_port = int(decode_base_port) + decode_dp_rank - prefill_dp_rank
+        decode_zmq_address_adjusted = f"{decode_ip}:{decode_adjusted_port}"
+        
+        logger.info(
+            f"Pairing prefill rank {prefill_dp_rank} with decode rank {decode_dp_rank}: "
+            f"prefill {prefill_base_port}→{prefill_adjusted_port}, decode {decode_base_port}→{decode_adjusted_port}")
         logger.debug(
             f"prefill: {prefill_replica_id}@{prefill_zmq_address} (dp_rank={prefill_dp_rank}), "
             f"decode: {decode_replica_id}@{decode_zmq_address} (dp_rank={decode_dp_rank})")
 
         if request_id:
             nccl_request_id = (
-                f"___prefill_addr_{prefill_zmq_address}"
-                f"___decode_addr_{decode_zmq_address}"
+                f"___prefill_addr_{prefill_zmq_address_adjusted}"
+                f"___decode_addr_{decode_zmq_address_adjusted}"
                 f"___prefill_replica_id_{prefill_replica_id}"
                 f"___decode_replica_id_{decode_replica_id}"
                 f"___rid_{request_id}"
             )
         else:
             nccl_request_id = (
-                f"___prefill_addr_{prefill_zmq_address}"
-                f"___decode_addr_{decode_zmq_address}"
+                f"___prefill_addr_{prefill_zmq_address_adjusted}"
+                f"___decode_addr_{decode_zmq_address_adjusted}"
                 f"___prefill_replica_id_{prefill_replica_id}"
                 f"___decode_replica_id_{decode_replica_id}"
                 f"___uuid_{random_uuid()}"
@@ -1078,15 +1078,20 @@ class SessionAwareRequestRouter(PowerOfTwoChoicesRequestRouter):
 
 class P2pNcclConnectorBackend(BaseConnectorBackend):
     def setup(self) -> None:
-        # from vllm import envs as vllm_envs, utils as vllm_utils
-
         base_port = self.kv_transfer_config["kv_port"]
-        port = int(base_port) + self._compute_port_offset()
-        logger.info(f"{base_port=}, {port=}")
-
-        # ip = vllm_utils.get_ip()
-        # zmq_address = f"{ip}:{port}"
-        self.kv_transfer_config["kv_port"] = str(port)
+        
+        # For DP deployments, vLLM's P2pNcclEngine already handles port offsetting 
+        # via get_world_group().rank (which equals dp_rank when TP=1).
+        # Only add offset for non-DP cases (TP/PP deployments).
+        dp_rank = self.llm_config.engine_kwargs.get("data_parallel_rank")
+        if dp_rank is not None and dp_rank >= 0:
+            # DP deployment - vLLM handles offset, don't add it here
+            logger.info(f"P2pNcclConnectorBackend.setup (DP): kv_port={base_port}, dp_rank={dp_rank} (no offset added)")
+        else:
+            # Non-DP deployment - add offset based on replica rank
+            port = int(base_port) + self._compute_port_offset()
+            self.kv_transfer_config["kv_port"] = str(port)
+            logger.info(f"P2pNcclConnectorBackend.setup (non-DP): base_port={base_port}, port={port}")
 
 if not KVConnectorBackendFactory.is_registered("P2pNcclConnector"):
     KVConnectorBackendFactory.register_backend(
