@@ -1,111 +1,61 @@
-# PD + P2pNcclConnector configuration (DP16 TP1 EP)
-# Uses NCCL for GPU-to-GPU transfer with Data Parallel and Expert Parallel
-# Needs vLLM 0.11.1+ for https://github.com/vllm-project/vllm/pull/26209
+# PD + DP configuration (Prefill: DPEP16, Decode: DPEP32) with NIXL KV transfer
+# Uses NIXL connector for GPU-to-GPU KV transfer with Data + Expert Parallelism
 # Run: `serve run pd.yaml`
 applications:
-  - name: deepseek-pd-nccl
+  - name: deepseek-pd-wide-ep
     route_prefix: /
     import_path: pd_dpep_builder:build_pd_dp_openai_app
-    runtime_env:
-      env_vars:
-        UCX_TLS: "all"
-        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     args:
       prefill_config:
         model_loading_config:
           model_id: deepseek
-          model_source: deepseek-ai/DeepSeek-V3-0324
+          model_source: deepseek-ai/DeepSeek-V3
         deployment_config:
           ray_actor_options:
             resources:
               prefill: 1
           request_router_config:
-            request_router_class: pd_dpep_builder:SessionAwareRequestRouter
-            request_routing_stats_period_s: 2
-            request_routing_stats_timeout_s: 1
+            request_router_class: ray.serve.llm.request_router:PrefixCacheAffinityRouter
         engine_kwargs:
           max_model_len: 10000
           data_parallel_size: 16
           tensor_parallel_size: 1
           enable_expert_parallel: true
-          enable_prefix_caching: true
-          load_format: dummy
-          compilation_config:
-            cudagraph_mode: "PIECEWISE"
-            cudagraph_capture_sizes: [1]
           kv_transfer_config:
-            kv_connector: P2pNcclConnector
-            kv_role: kv_producer
-            kv_buffer_size: "1e1"
-            kv_port: "21001"
-            kv_connector_extra_config:
-              proxy_ip: 0.0.0.0
-              proxy_port: "30001"
-              http_port: "20001"
-            mem_pool_size_gb: "16"
+            kv_connector: NixlConnector
+            kv_role: kv_both
         experimental_configs:
-          stream_batching_interval_ms: 0
           dp_size_per_node: 8
-      runtime_env:
-        env_vars:
-          VLLM_USE_DEEP_GEMM: "1"
-          VLLM_ALL2ALL_BACKEND: "deepep_high_throughput"
+        runtime_env:
+          env_vars:
+            VLLM_USE_DEEP_GEMM: "1"
+            VLLM_ALL2ALL_BACKEND: "deepep_high_throughput"
       decode_config:
         model_loading_config:
           model_id: deepseek
-          model_source: deepseek-ai/DeepSeek-V3-0324
+          model_source: deepseek-ai/DeepSeek-V3
         deployment_config:
           ray_actor_options:
             resources:
               decode: 1
-          request_router_config:
-            request_router_class: pd_dpep_builder:SessionAwareRequestRouter
-            request_routing_stats_period_s: 2
-            request_routing_stats_timeout_s: 1
         engine_kwargs:
           max_model_len: 10000
-          data_parallel_size: 16
+          data_parallel_size: 32
           tensor_parallel_size: 1
           enable_expert_parallel: true
-          enable_prefix_caching: true
-          load_format: dummy
-          compilation_config:
-            cudagraph_mode: "PIECEWISE"
-            cudagraph_capture_sizes: [1]
           kv_transfer_config:
-            kv_connector: P2pNcclConnector
-            kv_role: kv_consumer
-            kv_buffer_size: "1e10"
-            kv_port: "22001"
-            kv_connector_extra_config:
-              proxy_ip: 0.0.0.0
-              proxy_port: "30001"
-              http_port: "20002"
-            mem_pool_size_gb: "16"
+            kv_connector: NixlConnector
+            kv_role: kv_both
         experimental_configs:
-          stream_batching_interval_ms: 0
           dp_size_per_node: 8
-      runtime_env:
-        env_vars:
-          VLLM_USE_DEEP_GEMM: "1"
-          VLLM_ALL2ALL_BACKEND: "deepep_low_latency"
-      proxy_cls_config:
-        proxy_cls: pd_dpep_builder:P2pNcclPDProxyServer
-        proxy_extra_kwargs:
-          proxy_ip: 0.0.0.0
-          proxy_port: "8000"
-          proxy_service_discovery_port: "30001"
-      proxy_deployment_config:
-        autoscaling_config:
-          min_replicas: 16
-          max_replicas: 16
-        max_ongoing_requests: 100000
+        runtime_env:
+          env_vars:
+            VLLM_USE_DEEP_GEMM: "1"
+            VLLM_ALL2ALL_BACKEND: "deepep_low_latency"
       ingress_deployment_config:
         autoscaling_config:
           min_replicas: 16
           max_replicas: 16
 working_dir: .
 query_auth_token_enabled: false
-name: deepseek-pd-nccl
-compute_config: 8xh100-workers-tcpx:1
-image_uri: anyscale/image/rui-tcpx-llm:44
+name: deepseek-pd-wide-ep

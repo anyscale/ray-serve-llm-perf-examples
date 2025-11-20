@@ -16,6 +16,11 @@ prefill_config = LLMConfig(
         "model_id": "dsv3",
         "model_source": "deepseek-ai/DeepSeek-V3-0324",
     },
+    deployment_config={
+        "request_router_config": {
+            "request_router_class": "ray.serve.llm.request_router:PrefixCacheAffinityRouter"
+        }
+    },
     engine_kwargs={
         "max_model_len": 10000,
         "data_parallel_size": 16,
