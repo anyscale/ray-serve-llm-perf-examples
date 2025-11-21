@@ -44,12 +44,12 @@ This setup includes:
 ray start --head
 ```
 
-**On each of the prefill nodes (8xH100/H200):**
+**On each of the prefill nodes (8xH200):**
 ```bash
 ray start --address='<head_ip>:6379' --resources='{"prefill": 8}'
 ```
 
-**On each of the decode nodes (8xH100/H200):**
+**On each of the decode nodes (8xH200):**
 ```bash
 ray start --address='<head_ip>:6379' --resources='{"decode": 8}'
 ```
