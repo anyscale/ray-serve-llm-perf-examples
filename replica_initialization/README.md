@@ -59,6 +59,7 @@ Key metrics:
 **Graphs**: `graphs/` directory contains performance comparisons
 - Individual model charts: `llama8b.png`, `llama70b.png`, `Qwen235B.png`
 - Cross-model overview: `all_models_comparison.png`
+![All Models Comparison](graphs/all_models_comparison.png)
 
 **Terminal logs**: `experiment_terminal_output/` has detailed timing breakdowns for each experiment run.
 
