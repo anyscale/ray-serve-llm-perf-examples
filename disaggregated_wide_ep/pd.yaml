@@ -49,7 +49,6 @@ applications:
             VLLM_ALL2ALL_BACKEND: "deepep_high_throughput"
             VLLM_MOE_DP_CHUNK_SIZE: "512"
             VLLM_SKIP_P2P_CHECK: "1"
-            VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
             NVIDIA_GDRCOPY: "enabled"
             PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
             VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
