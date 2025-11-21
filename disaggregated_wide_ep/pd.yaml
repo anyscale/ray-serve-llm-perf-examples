@@ -9,7 +9,7 @@ applications:
       prefill_config:
         model_loading_config:
           model_id: deepseek
-          model_source: deepseek-ai/DeepSeek-V3
+          model_source: deepseek-ai/DeepSeek-V3-0324
         deployment_config:
           ray_actor_options:
             resources:
@@ -17,10 +17,27 @@ applications:
           request_router_config:
             request_router_class: ray.serve.llm.request_router:PrefixCacheAffinityRouter
         engine_kwargs:
-          max_model_len: 10000
+          max_model_len: 16384
+          max_num_seqs: 512
           data_parallel_size: 16
           tensor_parallel_size: 1
           enable_expert_parallel: true
+          enable_dbo: true
+          dbo_decode_token_threshold: 32
+          enable_eplb: true
+          eplb_config:
+            window_size: 1000
+            step_interval: 3000
+            num_redundant_experts: 32
+            log_balancedness: false
+          compilation_config:
+            pass_config:
+              enable_fusion: true
+              enable_attn_fusion: true
+              enable_noop: true
+            custom_ops:
+              - "+rms_norm"
+            cudagraph_mode: "FULL_DECODE_ONLY"
           kv_transfer_config:
             kv_connector: NixlConnector
             kv_role: kv_both
@@ -30,19 +47,44 @@ applications:
           env_vars:
             VLLM_USE_DEEP_GEMM: "1"
             VLLM_ALL2ALL_BACKEND: "deepep_high_throughput"
+            VLLM_MOE_DP_CHUNK_SIZE: "512"
+            VLLM_SKIP_P2P_CHECK: "1"
+            NVIDIA_GDRCOPY: "enabled"
+            PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+            VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
+            NVSHMEM_QP_DEPTH: "1512"
+            GLOO_SOCKET_IFNAME: "eth0"
       decode_config:
         model_loading_config:
           model_id: deepseek
-          model_source: deepseek-ai/DeepSeek-V3
+          model_source: deepseek-ai/DeepSeek-V3-0324
         deployment_config:
           ray_actor_options:
             resources:
               decode: 1
         engine_kwargs:
-          max_model_len: 10000
+          max_model_len: 16384
+          max_num_seqs: 512
           data_parallel_size: 32
           tensor_parallel_size: 1
           enable_expert_parallel: true
+          enable_prefix_caching: false
+          enable_dbo: true
+          dbo_decode_token_threshold: 32
+          enable_eplb: true
+          eplb_config:
+            window_size: 1000
+            step_interval: 3000
+            num_redundant_experts: 32
+            log_balancedness: false
+          compilation_config:
+            pass_config:
+              enable_fusion: true
+              enable_attn_fusion: true
+              enable_noop: true
+            custom_ops:
+              - "+rms_norm"
+            cudagraph_mode: "FULL_DECODE_ONLY"
           kv_transfer_config:
             kv_connector: NixlConnector
             kv_role: kv_both
@@ -52,10 +94,16 @@ applications:
           env_vars:
             VLLM_USE_DEEP_GEMM: "1"
             VLLM_ALL2ALL_BACKEND: "deepep_low_latency"
+            VLLM_MOE_DP_CHUNK_SIZE: "512"
+            VLLM_SKIP_P2P_CHECK: "1"
+            NVIDIA_GDRCOPY: "enabled"
+            PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+            NVSHMEM_QP_DEPTH: "1512"
+            GLOO_SOCKET_IFNAME: "eth0"
       ingress_deployment_config:
         autoscaling_config:
-          min_replicas: 16
-          max_replicas: 16
+          min_replicas: 64
+          max_replicas: 64
 working_dir: .
 query_auth_token_enabled: false
 name: deepseek-pd-wide-ep
