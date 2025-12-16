@@ -72,12 +72,14 @@ def run_experiment(model_name, experiment_name):
         callback_config=callback_config,
         accelerator_type="H100",
         engine_kwargs={
-            "load_format": "runai_streamer",
             "tensor_parallel_size": MODEL_TO_TENSOR_PARALLEL_SIZE[model_name],
             "compilation_config": {
                 "cache_dir": "/home/ray/.cache/vllm/torch_compile_cache/s3_cache",
             }
         },
+        load_format = EXPERIMENT_TO_LOAD_FORMAT[experiment_name]
+        if load_format:
+            engine_kwargs["load_format"] = load_format
         runtime_env={"env_vars": {
             # "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
             # "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
